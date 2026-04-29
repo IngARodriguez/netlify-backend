@@ -1,0 +1,10 @@
+{
+  "name": "netlify-backend",
+  "version": "1.0.0",
+  "description": "Backend serverless con Netlify Functions para recibir POST",
+  "scripts": {
+    "dev": "netlify dev",
+    "deploy": "netlify deploy --prod"
+  },
+  "license": "MIT"
+}

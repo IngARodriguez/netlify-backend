@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Netlify Backend - Test POST</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    textarea { width: 100%; height: 140px; font-family: monospace; }
+    pre { background: #111; color: #0f0; padding: 1rem; border-radius: 6px; overflow:auto; }
+    button { padding: .6rem 1rem; font-size: 1rem; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>Probar endpoint POST</h1>
+  <p>Envía un JSON al endpoint <code>/api/webhook</code>.</p>
+  <textarea id="payload">{"hello": "world", "from": "browser"}</textarea>
+  <br><br>
+  <button id="send">Enviar POST</button>
+  <h3>Respuesta:</h3>
+  <pre id="response">—</pre>
+
+  <script>
+    document.getElementById("send").addEventListener("click", async () => {
+      const out = document.getElementById("response");
+      out.textContent = "Enviando...";
+      try {
+        const body = document.getElementById("payload").value;
+        const res = await fetch("/api/webhook", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+        });
+        const data = await res.json();
+        out.textContent = JSON.stringify(data, null, 2);
+      } catch (err) {
+        out.textContent = "Error: " + err.message;
+      }
+    });
+  </script>
+</body>
+</html>
