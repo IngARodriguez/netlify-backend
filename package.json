@@ -1,10 +1,13 @@
 {
   "name": "netlify-backend",
-  "version": "1.0.0",
-  "description": "Backend serverless con Netlify Functions para recibir POST",
+  "version": "1.1.0",
+  "description": "Backend serverless con Netlify Functions para recibir POST y persistir en Netlify Blobs",
   "scripts": {
     "dev": "netlify dev",
     "deploy": "netlify deploy --prod"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0"
   },
   "license": "MIT"
 }

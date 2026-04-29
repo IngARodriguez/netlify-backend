@@ -1,43 +1,41 @@
 # netlify-backend
 
-Backend serverless con **Netlify Functions** para recibir solicitudes POST.
+Backend serverless con **Netlify Functions** para recibir solicitudes POST y persistirlas en **Netlify Blobs**.
 
-## Endpoint
+## Endpoints
 
-```
-POST https://<tu-sitio>.netlify.app/api/webhook
-Content-Type: application/json
-```
+| Método | Ruta | Descripción |
+|---|---|---|
+| `POST` | `/api/webhook` | Recibe un JSON, lo guarda y devuelve `{ok, id, receivedAt, echo}` |
+| `GET`  | `/api/messages` | Lista todos los mensajes recibidos (más recientes primero) |
+| `DELETE` | `/api/messages` | Borra todos los mensajes |
 
-Devuelve un JSON con `ok: true`, `receivedAt` y un `echo` del payload recibido.
+También hay UI:
+- `/` → formulario para enviar un POST de prueba.
+- `/messages.html` → tabla con todo lo recibido (con auto-refresh opcional).
 
 ## Estructura
 
-- `netlify/functions/webhook.js` — la función serverless que recibe el POST.
-- `public/index.html` — página estática simple para probar el endpoint desde el navegador.
-- `netlify.toml` — configuración (publish dir, functions dir, redirect `/api/webhook`).
+- `netlify/functions/webhook.js` — recibe POST y guarda en Blobs.
+- `netlify/functions/messages.js` — GET (listar) / DELETE (borrar todos).
+- `public/index.html` — UI para enviar POST.
+- `public/messages.html` — UI para ver lo recibido.
+- `netlify.toml` — redirects y configuración.
 
 ## Probar localmente
 
 ```bash
+npm install
 npm install -g netlify-cli
 netlify dev
 ```
 
-Luego: `curl -X POST http://localhost:8888/api/webhook -H 'Content-Type: application/json' -d '{"hola":"mundo"}'`
+Luego:
+```bash
+curl -X POST http://localhost:8888/api/webhook -H 'Content-Type: application/json' -d '{"hola":"mundo"}'
+curl http://localhost:8888/api/messages
+```
 
 ## Desplegar
 
-1. `netlify login`
-2. `netlify init` (vincula el repo de GitHub)
-3. `netlify deploy --prod`
-
-O conecta el repo desde el dashboard de Netlify y se desplegará automáticamente en cada push.
-
-## Probar el endpoint desplegado
-
-```bash
-curl -X POST https://<tu-sitio>.netlify.app/api/webhook \
-  -H 'Content-Type: application/json' \
-  -d '{"mensaje":"hola"}'
-```
+Conecta el repo desde el dashboard de Netlify (Add new site → Import from GitHub) y se desplegará en cada push.

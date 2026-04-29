@@ -1,20 +1,20 @@
+const { getStore } = require("@netlify/blobs");
+
+const cors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
 exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS") {
-    return {
-      statusCode: 204,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-      },
-      body: "",
-    };
+    return { statusCode: 204, headers: cors, body: "" };
   }
 
   if (event.httpMethod !== "POST") {
     return {
       statusCode: 405,
-      headers: { "Access-Control-Allow-Origin": "*" },
+      headers: cors,
       body: JSON.stringify({ error: "Method not allowed. Use POST." }),
     };
   }
@@ -25,23 +25,27 @@ exports.handler = async (event) => {
   } catch (err) {
     return {
       statusCode: 400,
-      headers: { "Access-Control-Allow-Origin": "*" },
+      headers: cors,
       body: JSON.stringify({ error: "Invalid JSON" }),
     };
   }
 
-  console.log("Received POST payload:", payload);
+  const receivedAt = new Date().toISOString();
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const record = {
+    id,
+    receivedAt,
+    ip: event.headers["x-nf-client-connection-ip"] || event.headers["x-forwarded-for"] || null,
+    userAgent: event.headers["user-agent"] || null,
+    payload,
+  };
+
+  const store = getStore("messages");
+  await store.setJSON(id, record);
 
   return {
     statusCode: 200,
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-    },
-    body: JSON.stringify({
-      ok: true,
-      receivedAt: new Date().toISOString(),
-      echo: payload,
-    }),
+    headers: { "Content-Type": "application/json", ...cors },
+    body: JSON.stringify({ ok: true, id, receivedAt, echo: payload }),
   };
 };

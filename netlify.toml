@@ -7,3 +7,9 @@
   to = "/.netlify/functions/webhook"
   status = 200
   force = true
+
+[[redirects]]
+  from = "/api/messages"
+  to = "/.netlify/functions/messages"
+  status = 200
+  force = true
