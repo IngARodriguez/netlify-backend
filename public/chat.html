@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Chat con Claude</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    textarea { width: 100%; height: 100px; font-family: inherit; font-size: 1rem; }
+    pre { background: #111; color: #0f0; padding: 1rem; border-radius: 6px; white-space: pre-wrap; }
+    button { padding: .6rem 1rem; font-size: 1rem; cursor: pointer; }
+    .meta { color: #666; font-size: .85rem; margin-top: .5rem; }
+    label { display: block; margin: .5rem 0 .2rem; font-size: .9rem; color: #555; }
+  </style>
+</head>
+<body>
+  <h1>Chat con Claude vía /api/chat</h1>
+  <p>Llama a Anthropic desde tu Netlify Function. Requiere <code>ANTHROPIC_API_KEY</code> en las env vars del sitio.</p>
+
+  <label for="system">System prompt (opcional)</label>
+  <textarea id="system" rows="2">Eres un asistente conciso. Responde en español.</textarea>
+
+  <label for="prompt">Tu mensaje</label>
+  <textarea id="prompt">Dime tres datos curiosos sobre los pulpos.</textarea>
+
+  <br><br>
+  <button id="send">Enviar</button>
+
+  <h3>Respuesta</h3>
+  <pre id="out">—</pre>
+  <div class="meta" id="meta"></div>
+
+  <script>
+    document.getElementById("send").addEventListener("click", async () => {
+      const out = document.getElementById("out");
+      const meta = document.getElementById("meta");
+      out.textContent = "Llamando a Claude...";
+      meta.textContent = "";
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: document.getElementById("prompt").value,
+            system: document.getElementById("system").value || undefined,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          out.textContent = "Error " + res.status + ":\n" + JSON.stringify(data, null, 2);
+          return;
+        }
+        out.textContent = data.text;
+        meta.textContent = `id=${data.id}  model=${data.model}  latency=${data.latencyMs}ms  ` +
+          `tokens: in=${data.usage.input_tokens}  out=${data.usage.output_tokens}  ` +
+          `cache_read=${data.usage.cache_read_input_tokens || 0}  cache_create=${data.usage.cache_creation_input_tokens || 0}`;
+      } catch (err) {
+        out.textContent = "Error: " + err.message;
+      }
+    });
+  </script>
+</body>
+</html>
