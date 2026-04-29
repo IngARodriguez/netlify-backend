@@ -8,6 +8,7 @@ const TOKEN = process.env.JOBS_WORKER_TOKEN;
 const POLL_MS = Number(process.env.POLL_MS || 1000);
 const CMD_TIMEOUT_MS = Number(process.env.CMD_TIMEOUT_MS || 30_000);
 const MAX_BUFFER = 1024 * 1024;
+const VERBOSE = process.env.VERBOSE === "1" || process.env.VERBOSE === "true";
 
 if (!TOKEN) {
   console.error("Falta la variable de entorno JOBS_WORKER_TOKEN");
@@ -19,10 +20,16 @@ const headers = {
   "Content-Type": "application/json",
 };
 
+const ts = () => new Date().toISOString().slice(11, 23);
+const vlog = (...a) => { if (VERBOSE) console.log(`[${ts()}]`, ...a); };
+
 async function claimNext() {
+  const t0 = Date.now();
   const r = await fetch(`${BASE}/api/jobs/next`, { headers });
-  if (!r.ok) throw new Error(`GET /api/jobs/next → ${r.status}`);
+  const latency = Date.now() - t0;
+  if (!r.ok) throw new Error(`GET /api/jobs/next → ${r.status} (${latency}ms)`);
   const data = await r.json();
+  vlog(`poll next ${latency}ms job=${data.job ? data.job.id : "null"}`);
   return data.job;
 }
 
@@ -52,31 +59,47 @@ async function runJob(job) {
 }
 
 async function postResult(id, result) {
+  const t0 = Date.now();
   const r = await fetch(`${BASE}/api/jobs/${id}/result`, {
     method: "POST",
     headers,
     body: JSON.stringify(result),
   });
-  if (!r.ok) throw new Error(`POST /api/jobs/${id}/result → ${r.status}`);
+  const latency = Date.now() - t0;
+  if (!r.ok) throw new Error(`POST /api/jobs/${id}/result → ${r.status} (${latency}ms)`);
+  vlog(`post result ${latency}ms id=${id}`);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function loop() {
-  console.log(`Worker activo. Polling ${BASE} cada ${POLL_MS}ms`);
+  console.log(
+    `[${ts()}] Worker activo. Polling ${BASE} cada ${POLL_MS}ms ` +
+    `(VERBOSE=${VERBOSE ? "on" : "off"})`
+  );
+  let pollCount = 0;
   while (true) {
+    pollCount++;
     try {
       const job = await claimNext();
       if (!job) {
+        if (!VERBOSE && pollCount % 30 === 0) {
+          console.log(`[${ts()}] heartbeat ${pollCount} polls, sin trabajos`);
+        }
         await sleep(POLL_MS);
         continue;
       }
-      console.log(`[${job.id}] $ ${job.command}`);
+      const claimedAt = Date.now();
+      const queueWaitMs = claimedAt - Date.parse(job.createdAt);
+      console.log(`[${ts()}] [${job.id}] $ ${job.command}  (esperó ${queueWaitMs}ms en cola)`);
       const result = await runJob(job);
       await postResult(job.id, result);
-      console.log(`[${job.id}] exit=${result.exitCode} (${result.durationMs}ms)`);
+      console.log(
+        `[${ts()}] [${job.id}] exit=${result.exitCode} ` +
+        `cmd=${result.durationMs}ms total=${Date.now() - claimedAt}ms`
+      );
     } catch (err) {
-      console.error("loop error:", err.message);
+      console.error(`[${ts()}] loop error:`, err.message);
       await sleep(POLL_MS);
     }
   }
