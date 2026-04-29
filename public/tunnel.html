@@ -14,7 +14,12 @@
     <option value="openai">OpenAI</option>
     <option value="anthropic">Anthropic</option>
   </select>
-  &nbsp;Model: <input id="model" size="30">
+</p>
+
+<p>
+  Model:
+  <select id="model" style="min-width: 320px;"></select>
+  <button type="button" id="refreshModels">Cargar modelos</button>
   &nbsp;max_tokens: <input id="maxTokens" type="number" size="6" value="2048">
 </p>
 
@@ -32,7 +37,8 @@
 const $ = id => document.getElementById(id);
 const tokenInput = $('token');
 const providerSel = $('provider');
-const modelInput = $('model');
+const modelSel = $('model');
+const refreshBtn = $('refreshModels');
 const maxTokensInput = $('maxTokens');
 const inputEl = $('input');
 const messagesEl = $('messages');
@@ -42,6 +48,11 @@ const sendBtn = $('send');
 const DEFAULT_MODELS = {
   openai: 'gpt-4o-mini',
   anthropic: 'claude-opus-4-7',
+};
+
+const MODELS_URL = {
+  openai: 'https://api.openai.com/v1/models',
+  anthropic: 'https://api.anthropic.com/v1/models',
 };
 
 function getHistory() {
@@ -56,16 +67,67 @@ function renderHistory() {
     .join('\n\n');
 }
 
-function applyProviderDefaults() {
-  const p = providerSel.value;
-  const saved = localStorage.getItem('tunnel_model_' + p);
-  modelInput.value = saved || DEFAULT_MODELS[p];
-  renderHistory();
+function getCachedModels(provider) {
+  return JSON.parse(localStorage.getItem('tunnel_models_' + provider) || 'null');
+}
+function setCachedModels(provider, ids) {
+  localStorage.setItem('tunnel_models_' + provider, JSON.stringify(ids));
+}
+
+function populateModelSelect() {
+  const provider = providerSel.value;
+  const cached = getCachedModels(provider);
+  const ids = (cached && cached.length) ? [...cached] : [DEFAULT_MODELS[provider]];
+  const current = localStorage.getItem('tunnel_model_' + provider) || DEFAULT_MODELS[provider];
+
+  modelSel.innerHTML = '';
+  if (!ids.includes(current)) ids.unshift(current);
+  for (const id of ids) {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = id;
+    if (id === current) opt.selected = true;
+    modelSel.appendChild(opt);
+  }
+}
+
+async function fetchModels() {
+  const token = tokenInput.value.trim();
+  if (!token) { alert('Falta el token'); return; }
+  const provider = providerSel.value;
+  refreshBtn.disabled = true;
+  statusEl.textContent = ' cargando modelos...';
+  try {
+    const r = await fetch('/api/proxy', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: MODELS_URL[provider], method: 'GET' }),
+    });
+    const data = await r.json();
+    if (!r.ok || !data.response) {
+      statusEl.textContent = ' error: ' + (data.error || 'HTTP ' + r.status);
+      return;
+    }
+    const items = data.response.body && data.response.body.data;
+    if (!Array.isArray(items)) {
+      statusEl.textContent = ' respuesta inesperada';
+      messagesEl.textContent = '[raw]\n' + JSON.stringify(data.response.body, null, 2);
+      return;
+    }
+    const ids = items.map(m => m.id).filter(Boolean).sort();
+    setCachedModels(provider, ids);
+    populateModelSelect();
+    statusEl.textContent = ' ' + ids.length + ' modelos cargados';
+  } catch (e) {
+    statusEl.textContent = ' fallo: ' + e.message;
+  } finally {
+    refreshBtn.disabled = false;
+  }
 }
 
 function buildRequest(history, prompt) {
   const provider = providerSel.value;
-  const model = modelInput.value.trim();
+  const model = modelSel.value;
   const maxTokens = Number(maxTokensInput.value) || 2048;
   const messages = [...history, { role: 'user', content: prompt }];
   if (provider === 'openai') {
@@ -96,10 +158,7 @@ async function send(prompt) {
   try {
     const r = await fetch('/api/proxy', {
       method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: req.url, method: 'POST', body: req.body }),
     });
     const data = await r.json();
@@ -157,22 +216,25 @@ inputEl.addEventListener('keydown', e => {
 tokenInput.addEventListener('change', () => {
   localStorage.setItem('tunnel_token', tokenInput.value.trim());
 });
-modelInput.addEventListener('change', () => {
-  localStorage.setItem('tunnel_model_' + providerSel.value, modelInput.value.trim());
+modelSel.addEventListener('change', () => {
+  localStorage.setItem('tunnel_model_' + providerSel.value, modelSel.value);
 });
 maxTokensInput.addEventListener('change', () => {
   localStorage.setItem('tunnel_max_tokens', maxTokensInput.value);
 });
 providerSel.addEventListener('change', () => {
   localStorage.setItem('tunnel_provider', providerSel.value);
-  applyProviderDefaults();
+  populateModelSelect();
+  renderHistory();
 });
+refreshBtn.addEventListener('click', fetchModels);
 
 (function init() {
   tokenInput.value = localStorage.getItem('tunnel_token') || '';
   providerSel.value = localStorage.getItem('tunnel_provider') || 'openai';
   maxTokensInput.value = localStorage.getItem('tunnel_max_tokens') || '2048';
-  applyProviderDefaults();
+  populateModelSelect();
+  renderHistory();
 })();
 </script>
 </body>
