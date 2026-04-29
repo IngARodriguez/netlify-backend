@@ -45,5 +45,3 @@ export default async (req) => {
 
   return json({ ok: true, id, receivedAt, echo: payload });
 };
-
-export const config = { path: "/api/webhook" };
