@@ -57,19 +57,43 @@ export default async (req) => {
     if (!bearer(req, clientToken)) return json({ error: "Unauthorized" }, 401);
     let body;
     try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
-    const command = typeof body.command === "string" ? body.command.trim() : "";
-    if (!command) return json({ error: "Falta 'command' (string)." }, 400);
-    if (command.length > 4000) return json({ error: "command demasiado largo" }, 400);
 
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const job = {
-      id,
-      command,
-      status: "pending",
-      createdAt: new Date().toISOString(),
-    };
+    let job;
+
+    if (body.type === "http" || body.request) {
+      if (!body.request || typeof body.request.url !== "string") {
+        return json({ error: "Para HTTP hace falta request.url (string)." }, 400);
+      }
+      try { new URL(body.request.url); }
+      catch { return json({ error: "request.url inválida." }, 400); }
+      job = {
+        id,
+        type: "http",
+        request: {
+          url: body.request.url,
+          method: (typeof body.request.method === "string" ? body.request.method : "GET").toUpperCase(),
+          headers: (body.request.headers && typeof body.request.headers === "object") ? body.request.headers : {},
+          body: body.request.body,
+        },
+        status: "pending",
+        createdAt: new Date().toISOString(),
+      };
+    } else {
+      const command = typeof body.command === "string" ? body.command.trim() : "";
+      if (!command) return json({ error: "Falta 'command' (string) o 'request' (objeto)." }, 400);
+      if (command.length > 4000) return json({ error: "command demasiado largo" }, 400);
+      job = {
+        id,
+        type: "shell",
+        command,
+        status: "pending",
+        createdAt: new Date().toISOString(),
+      };
+    }
+
     await getStore({ name: ACTIVE, consistency: "strong" }).setJSON(id, job);
-    return json({ ok: true, id, status: "pending" });
+    return json({ ok: true, id, status: "pending", type: job.type });
   }
 
   // GET /api/jobs/next  → worker reclama el siguiente pendiente (sólo mira ACTIVE)
@@ -105,11 +129,16 @@ export default async (req) => {
 
     job.status = body.error ? "error" : "done";
     job.finishedAt = new Date().toISOString();
-    job.stdout = String(body.stdout ?? "").slice(0, 100_000);
-    job.stderr = String(body.stderr ?? "").slice(0, 100_000);
-    job.exitCode = Number.isInteger(body.exitCode) ? body.exitCode : null;
     job.durationMs = Number.isFinite(body.durationMs) ? body.durationMs : null;
     if (body.error) job.error = String(body.error).slice(0, 2000);
+
+    if (body.response !== undefined) {
+      job.response = body.response;
+    } else {
+      job.stdout = String(body.stdout ?? "").slice(0, 100_000);
+      job.stderr = String(body.stderr ?? "").slice(0, 100_000);
+      job.exitCode = Number.isInteger(body.exitCode) ? body.exitCode : null;
+    }
 
     await archive.setJSON(id, job);
     await active.delete(id);
