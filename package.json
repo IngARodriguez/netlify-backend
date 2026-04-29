@@ -2,6 +2,7 @@
   "name": "netlify-backend",
   "version": "1.1.0",
   "description": "Backend serverless con Netlify Functions para recibir POST y persistir en Netlify Blobs",
+  "type": "module",
   "scripts": {
     "dev": "netlify dev",
     "deploy": "netlify deploy --prod"
