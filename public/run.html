@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Run command on Theia</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1rem; }
+    label { display: block; margin: .8rem 0 .3rem; font-weight: 600; }
+    input, textarea { width: 100%; font-family: monospace; box-sizing: border-box; padding: .5rem; }
+    textarea { height: 100px; }
+    pre { background: #111; color: #0f0; padding: 1rem; border-radius: 6px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+    button { padding: .6rem 1.2rem; font-size: 1rem; cursor: pointer; margin-top: .8rem; }
+    .muted { color: #666; font-size: .9rem; }
+    .row { display: flex; gap: 1rem; }
+    .row > * { flex: 1; }
+    .pill { display: inline-block; padding: .15rem .55rem; border-radius: 99px; font-size: .8rem; font-weight: 600; }
+    .pending { background: #fde68a; color: #92400e; }
+    .running { background: #bfdbfe; color: #1e3a8a; }
+    .done    { background: #bbf7d0; color: #14532d; }
+    .error   { background: #fecaca; color: #7f1d1d; }
+  </style>
+</head>
+<body>
+  <h1>Ejecutar comando en Theia</h1>
+  <p class="muted">
+    Envía el comando con <code>POST /api/run</code> (espera el resultado hasta 9 s) o
+    cae en cola con <code>POST /api/jobs</code> + polling. El token se guarda en localStorage.
+  </p>
+
+  <label for="token">JOBS_CLIENT_TOKEN</label>
+  <input id="token" type="password" placeholder="pega aquí tu JOBS_CLIENT_TOKEN" />
+
+  <label for="command">Comando</label>
+  <textarea id="command" placeholder="ls -la /home/project">uname -a && pwd && ls</textarea>
+
+  <div class="row">
+    <button id="run">Run (sincrónico)</button>
+    <button id="enqueue">Enqueue + polling</button>
+  </div>
+
+  <h3>Estado: <span id="status" class="pill">—</span></h3>
+  <h3>stdout</h3>
+  <pre id="stdout">—</pre>
+  <h3>stderr</h3>
+  <pre id="stderr">—</pre>
+  <h3>Meta</h3>
+  <pre id="meta">—</pre>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const tokenInput = $("token");
+    tokenInput.value = localStorage.getItem("JOBS_CLIENT_TOKEN") || "";
+    tokenInput.addEventListener("change", () => {
+      localStorage.setItem("JOBS_CLIENT_TOKEN", tokenInput.value.trim());
+    });
+
+    const setStatus = (s) => {
+      const el = $("status");
+      el.textContent = s || "—";
+      el.className = "pill " + (s || "");
+    };
+    const reset = () => {
+      setStatus("");
+      $("stdout").textContent = "—";
+      $("stderr").textContent = "—";
+      $("meta").textContent = "—";
+    };
+    const render = (job) => {
+      setStatus(job.status);
+      $("stdout").textContent = job.stdout ?? "—";
+      $("stderr").textContent = job.stderr ?? "—";
+      $("meta").textContent = JSON.stringify(
+        { id: job.id, exitCode: job.exitCode, durationMs: job.durationMs, error: job.error },
+        null, 2
+      );
+    };
+
+    const headers = () => ({
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + tokenInput.value.trim(),
+    });
+
+    $("run").addEventListener("click", async () => {
+      reset();
+      setStatus("running");
+      try {
+        const res = await fetch("/api/run", {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify({ command: $("command").value }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setStatus("error");
+          $("stderr").textContent = JSON.stringify(data, null, 2);
+          return;
+        }
+        if (data.status === "pending" || data.status === "running") {
+          $("meta").textContent = "Sigue corriendo. id=" + data.id + " — pulsa 'Enqueue + polling' o reintenta /api/jobs/" + data.id;
+          setStatus(data.status);
+          return;
+        }
+        render(data);
+      } catch (err) {
+        setStatus("error");
+        $("stderr").textContent = err.message;
+      }
+    });
+
+    $("enqueue").addEventListener("click", async () => {
+      reset();
+      setStatus("pending");
+      try {
+        const r1 = await fetch("/api/jobs", {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify({ command: $("command").value }),
+        });
+        const j1 = await r1.json();
+        if (!r1.ok) {
+          setStatus("error");
+          $("stderr").textContent = JSON.stringify(j1, null, 2);
+          return;
+        }
+        const id = j1.id;
+        $("meta").textContent = "id=" + id + " — polling cada 1 s...";
+        const deadline = Date.now() + 60_000;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 1000));
+          const r2 = await fetch("/api/jobs/" + id, { headers: headers() });
+          const j2 = await r2.json();
+          if (!r2.ok) {
+            setStatus("error");
+            $("stderr").textContent = JSON.stringify(j2, null, 2);
+            return;
+          }
+          const job = j2.job;
+          setStatus(job.status);
+          if (job.status === "done" || job.status === "error") {
+            render(job);
+            return;
+          }
+        }
+        setStatus("error");
+        $("stderr").textContent = "Timeout en polling tras 60s";
+      } catch (err) {
+        setStatus("error");
+        $("stderr").textContent = err.message;
+      }
+    });
+  </script>
+</body>
+</html>
