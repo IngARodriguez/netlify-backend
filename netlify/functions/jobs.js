@@ -28,7 +28,7 @@ const bearer = (req, expected) => {
 
 async function findJob(id) {
   for (const name of [ARCHIVE, ACTIVE, LEGACY]) {
-    const store = getStore(name);
+    const store = getStore({ name, consistency: "strong" });
     const job = await store.get(id, { type: "json" });
     if (job) return { job, store };
   }
@@ -68,14 +68,14 @@ export default async (req) => {
       status: "pending",
       createdAt: new Date().toISOString(),
     };
-    await getStore(ACTIVE).setJSON(id, job);
+    await getStore({ name: ACTIVE, consistency: "strong" }).setJSON(id, job);
     return json({ ok: true, id, status: "pending" });
   }
 
   // GET /api/jobs/next  → worker reclama el siguiente pendiente (sólo mira ACTIVE)
   if (req.method === "GET" && parts.length === 3 && parts[2] === "next") {
     if (!bearer(req, workerToken)) return json({ error: "Unauthorized" }, 401);
-    const active = getStore(ACTIVE);
+    const active = getStore({ name: ACTIVE, consistency: "strong" });
     const list = await active.list();
     let oldest = null;
     for (const blob of list.blobs) {
@@ -95,8 +95,8 @@ export default async (req) => {
   if (req.method === "POST" && parts.length === 4 && parts[3] === "result") {
     if (!bearer(req, workerToken)) return json({ error: "Unauthorized" }, 401);
     const id = parts[2];
-    const active = getStore(ACTIVE);
-    const archive = getStore(ARCHIVE);
+    const active = getStore({ name: ACTIVE, consistency: "strong" });
+    const archive = getStore({ name: ARCHIVE, consistency: "strong" });
     const job = await active.get(id, { type: "json" });
     if (!job) return json({ error: "Not found" }, 404);
 

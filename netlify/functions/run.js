@@ -57,8 +57,8 @@ export default async (req) => {
     MAX_WAIT_MS
   );
 
-  const active = getStore(ACTIVE);
-  const archive = getStore(ARCHIVE);
+  const active = getStore({ name: ACTIVE, consistency: "strong" });
+  const archive = getStore({ name: ARCHIVE, consistency: "strong" });
 
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const initial = {
