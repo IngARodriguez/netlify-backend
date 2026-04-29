@@ -39,5 +39,3 @@ export default async (req) => {
 
   return json({ count: messages.length, messages });
 };
-
-export const config = { path: "/api/messages" };
