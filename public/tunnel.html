@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Tunnel chat</title>
+</head>
+<body>
+<h1>Chat via tunnel</h1>
+
+<p>
+  Token: <input id="token" type="password" size="60">
+  &nbsp;Provider:
+  <select id="provider">
+    <option value="openai">OpenAI</option>
+    <option value="anthropic">Anthropic</option>
+  </select>
+  &nbsp;Model: <input id="model" size="30">
+  &nbsp;max_tokens: <input id="maxTokens" type="number" size="6" value="2048">
+</p>
+
+<pre id="messages" style="white-space: pre-wrap; border: 1px solid #ccc; padding: 0.5em; min-height: 300px;"></pre>
+
+<form id="form">
+  <textarea id="input" rows="3" cols="80" placeholder="Escribe tu mensaje y pulsa Enviar (Ctrl+Enter para enviar)"></textarea>
+  <br>
+  <button type="submit" id="send">Enviar</button>
+  <button type="button" id="clear">Limpiar historial</button>
+  <span id="status"></span>
+</form>
+
+<script>
+const $ = id => document.getElementById(id);
+const tokenInput = $('token');
+const providerSel = $('provider');
+const modelInput = $('model');
+const maxTokensInput = $('maxTokens');
+const inputEl = $('input');
+const messagesEl = $('messages');
+const statusEl = $('status');
+const sendBtn = $('send');
+
+const DEFAULT_MODELS = {
+  openai: 'gpt-4o-mini',
+  anthropic: 'claude-opus-4-7',
+};
+
+function getHistory() {
+  return JSON.parse(localStorage.getItem('tunnel_hist_' + providerSel.value) || '[]');
+}
+function setHistory(h) {
+  localStorage.setItem('tunnel_hist_' + providerSel.value, JSON.stringify(h));
+}
+function renderHistory() {
+  messagesEl.textContent = getHistory()
+    .map(m => '[' + m.role + ']\n' + m.content)
+    .join('\n\n');
+}
+
+function applyProviderDefaults() {
+  const p = providerSel.value;
+  const saved = localStorage.getItem('tunnel_model_' + p);
+  modelInput.value = saved || DEFAULT_MODELS[p];
+  renderHistory();
+}
+
+function buildRequest(history, prompt) {
+  const provider = providerSel.value;
+  const model = modelInput.value.trim();
+  const maxTokens = Number(maxTokensInput.value) || 2048;
+  const messages = [...history, { role: 'user', content: prompt }];
+  if (provider === 'openai') {
+    return {
+      url: 'https://api.openai.com/v1/chat/completions',
+      body: { model, messages },
+      extract: r => r.body.choices[0].message.content,
+    };
+  }
+  return {
+    url: 'https://api.anthropic.com/v1/messages',
+    body: { model, max_tokens: maxTokens, messages },
+    extract: r => r.body.content[0].text,
+  };
+}
+
+async function send(prompt) {
+  const token = tokenInput.value.trim();
+  if (!token) { alert('Falta el token'); return; }
+
+  const history = getHistory();
+  const req = buildRequest(history, prompt);
+
+  statusEl.textContent = ' enviando...';
+  sendBtn.disabled = true;
+  const t0 = Date.now();
+
+  try {
+    const r = await fetch('/api/proxy', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ url: req.url, method: 'POST', body: req.body }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      statusEl.textContent = ' HTTP ' + r.status + ': ' + (data.error || '');
+      return;
+    }
+    if (data.status !== 'done' || !data.response) {
+      statusEl.textContent = ' status=' + data.status + ' ' + (data.message || data.error || '');
+      return;
+    }
+    let text;
+    try { text = req.extract(data.response); }
+    catch (e) {
+      statusEl.textContent = ' parse error: ' + e.message;
+      messagesEl.textContent += '\n\n[raw response]\n' + JSON.stringify(data.response, null, 2);
+      return;
+    }
+    const newHistory = [...history,
+      { role: 'user', content: prompt },
+      { role: 'assistant', content: text },
+    ];
+    setHistory(newHistory);
+    renderHistory();
+    statusEl.textContent = ' ok (' + (Date.now() - t0) + 'ms)';
+  } catch (e) {
+    statusEl.textContent = ' fallo: ' + e.message;
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+$('form').addEventListener('submit', e => {
+  e.preventDefault();
+  const prompt = inputEl.value.trim();
+  if (!prompt) return;
+  inputEl.value = '';
+  send(prompt);
+});
+
+$('clear').addEventListener('click', () => {
+  if (confirm('Borrar historial de ' + providerSel.value + '?')) {
+    setHistory([]);
+    renderHistory();
+  }
+});
+
+inputEl.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    $('form').requestSubmit();
+  }
+});
+
+tokenInput.addEventListener('change', () => {
+  localStorage.setItem('tunnel_token', tokenInput.value.trim());
+});
+modelInput.addEventListener('change', () => {
+  localStorage.setItem('tunnel_model_' + providerSel.value, modelInput.value.trim());
+});
+maxTokensInput.addEventListener('change', () => {
+  localStorage.setItem('tunnel_max_tokens', maxTokensInput.value);
+});
+providerSel.addEventListener('change', () => {
+  localStorage.setItem('tunnel_provider', providerSel.value);
+  applyProviderDefaults();
+});
+
+(function init() {
+  tokenInput.value = localStorage.getItem('tunnel_token') || '';
+  providerSel.value = localStorage.getItem('tunnel_provider') || 'openai';
+  maxTokensInput.value = localStorage.getItem('tunnel_max_tokens') || '2048';
+  applyProviderDefaults();
+})();
+</script>
+</body>
+</html>
