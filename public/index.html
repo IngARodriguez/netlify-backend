@@ -49,7 +49,6 @@
       color: #075985;
     }
     .method.post { background: #dcfce7; color: #14532d; }
-    .method.del  { background: #fee2e2; color: #7f1d1d; }
   </style>
 </head>
 <body>
@@ -58,10 +57,6 @@
 
   <h2>Aplicaciones</h2>
   <div class="cards">
-    <a class="card" href="/messages.html">
-      <h3>Mensajes</h3>
-      <p>Ver y borrar todo lo recibido por <code>/api/webhook</code>.</p>
-    </a>
     <a class="card" href="/run.html">
       <h3>Run command</h3>
       <p>Ejecutar comandos shell en Theia mediante el worker.</p>
@@ -78,9 +73,6 @@
       <tr><th>Método</th><th>Ruta</th><th>Auth</th><th>Descripción</th></tr>
     </thead>
     <tbody>
-      <tr><td><span class="method post">POST</span></td><td><code>/api/webhook</code></td><td>—</td><td>Guarda un JSON arbitrario</td></tr>
-      <tr><td><span class="method">GET</span></td><td><code><a href="/api/messages">/api/messages</a></code></td><td>—</td><td>Lista mensajes recibidos</td></tr>
-      <tr><td><span class="method del">DEL</span></td><td><code>/api/messages</code></td><td>—</td><td>Borra todos los mensajes</td></tr>
       <tr><td><span class="method post">POST</span></td><td><code>/api/jobs</code></td><td>Bearer <code>JOBS_CLIENT_TOKEN</code></td><td>Encola un job (shell o http)</td></tr>
       <tr><td><span class="method">GET</span></td><td><code>/api/jobs/:id</code></td><td>Bearer <code>JOBS_CLIENT_TOKEN</code></td><td>Consulta estado / resultado</td></tr>
       <tr><td><span class="method post">POST</span></td><td><code>/api/run</code></td><td>Bearer <code>JOBS_CLIENT_TOKEN</code></td><td>Ejecuta comando y espera ≤25 s</td></tr>

@@ -1,15 +1,3 @@
 [build]
   publish = "public"
   functions = "netlify/functions"
-
-[[redirects]]
-  from = "/api/webhook"
-  to = "/.netlify/functions/webhook"
-  status = 200
-  force = true
-
-[[redirects]]
-  from = "/api/messages"
-  to = "/.netlify/functions/messages"
-  status = 200
-  force = true
