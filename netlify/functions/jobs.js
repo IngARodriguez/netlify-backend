@@ -4,6 +4,10 @@ export const config = {
   path: ["/api/jobs", "/api/jobs/*"],
 };
 
+const ACTIVE = "jobs-active";
+const ARCHIVE = "jobs-archive";
+const LEGACY = "jobs";
+
 const cors = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -22,6 +26,15 @@ const bearer = (req, expected) => {
   return !!expected && !!m && m[1] === expected;
 };
 
+async function findJob(id) {
+  for (const name of [ARCHIVE, ACTIVE, LEGACY]) {
+    const store = getStore(name);
+    const job = await store.get(id, { type: "json" });
+    if (job) return { job, store };
+  }
+  return null;
+}
+
 export default async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("", { status: 204, headers: cors });
@@ -38,9 +51,8 @@ export default async (req) => {
 
   const url = new URL(req.url);
   const parts = url.pathname.split("/").filter(Boolean);
-  const store = getStore("jobs");
 
-  // POST /api/jobs  → cliente crea un trabajo
+  // POST /api/jobs  → cliente crea un trabajo (queda en ACTIVE)
   if (req.method === "POST" && parts.length === 2) {
     if (!bearer(req, clientToken)) return json({ error: "Unauthorized" }, 401);
     let body;
@@ -56,17 +68,18 @@ export default async (req) => {
       status: "pending",
       createdAt: new Date().toISOString(),
     };
-    await store.setJSON(id, job);
+    await getStore(ACTIVE).setJSON(id, job);
     return json({ ok: true, id, status: "pending" });
   }
 
-  // GET /api/jobs/next  → worker reclama el siguiente pendiente
+  // GET /api/jobs/next  → worker reclama el siguiente pendiente (sólo mira ACTIVE)
   if (req.method === "GET" && parts.length === 3 && parts[2] === "next") {
     if (!bearer(req, workerToken)) return json({ error: "Unauthorized" }, 401);
-    const list = await store.list();
+    const active = getStore(ACTIVE);
+    const list = await active.list();
     let oldest = null;
     for (const blob of list.blobs) {
-      const j = await store.get(blob.key, { type: "json" });
+      const j = await active.get(blob.key, { type: "json" });
       if (j && j.status === "pending" && (!oldest || j.createdAt < oldest.createdAt)) {
         oldest = j;
       }
@@ -74,15 +87,17 @@ export default async (req) => {
     if (!oldest) return json({ ok: true, job: null });
     oldest.status = "running";
     oldest.startedAt = new Date().toISOString();
-    await store.setJSON(oldest.id, oldest);
+    await active.setJSON(oldest.id, oldest);
     return json({ ok: true, job: oldest });
   }
 
-  // POST /api/jobs/:id/result  → worker entrega el resultado
+  // POST /api/jobs/:id/result  → worker entrega resultado (mueve ACTIVE → ARCHIVE)
   if (req.method === "POST" && parts.length === 4 && parts[3] === "result") {
     if (!bearer(req, workerToken)) return json({ error: "Unauthorized" }, 401);
     const id = parts[2];
-    const job = await store.get(id, { type: "json" });
+    const active = getStore(ACTIVE);
+    const archive = getStore(ARCHIVE);
+    const job = await active.get(id, { type: "json" });
     if (!job) return json({ error: "Not found" }, 404);
 
     let body;
@@ -95,17 +110,29 @@ export default async (req) => {
     job.exitCode = Number.isInteger(body.exitCode) ? body.exitCode : null;
     job.durationMs = Number.isFinite(body.durationMs) ? body.durationMs : null;
     if (body.error) job.error = String(body.error).slice(0, 2000);
-    await store.setJSON(id, job);
+
+    await archive.setJSON(id, job);
+    await active.delete(id);
     return json({ ok: true });
   }
 
-  // GET /api/jobs/:id  → cliente consulta estado/resultado
+  // DELETE /api/jobs/:id  → cliente borra de cualquier store
+  if (req.method === "DELETE" && parts.length === 3) {
+    if (!bearer(req, clientToken)) return json({ error: "Unauthorized" }, 401);
+    const id = parts[2];
+    const found = await findJob(id);
+    if (!found) return json({ error: "Not found" }, 404);
+    await found.store.delete(id);
+    return json({ ok: true });
+  }
+
+  // GET /api/jobs/:id  → cliente consulta estado/resultado (busca en ARCHIVE → ACTIVE → LEGACY)
   if (req.method === "GET" && parts.length === 3) {
     if (!bearer(req, clientToken)) return json({ error: "Unauthorized" }, 401);
     const id = parts[2];
-    const job = await store.get(id, { type: "json" });
-    if (!job) return json({ error: "Not found" }, 404);
-    return json({ ok: true, job });
+    const found = await findJob(id);
+    if (!found) return json({ error: "Not found" }, 404);
+    return json({ ok: true, job: found.job });
   }
 
   return json({ error: "Route not found" }, 404);

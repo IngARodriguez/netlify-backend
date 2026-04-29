@@ -5,7 +5,7 @@ const execAsync = promisify(exec);
 
 const BASE = process.env.JOBS_BASE_URL || "https://enviromentfree.netlify.app";
 const TOKEN = process.env.JOBS_WORKER_TOKEN;
-const POLL_MS = Number(process.env.POLL_MS || 3000);
+const POLL_MS = Number(process.env.POLL_MS || 1000);
 const CMD_TIMEOUT_MS = Number(process.env.CMD_TIMEOUT_MS || 30_000);
 const MAX_BUFFER = 1024 * 1024;
 

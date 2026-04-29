@@ -2,6 +2,9 @@ import { getStore } from "@netlify/blobs";
 
 export const config = { path: "/api/run" };
 
+const ACTIVE = "jobs-active";
+const ARCHIVE = "jobs-archive";
+
 const cors = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -22,8 +25,8 @@ const bearer = (req, expected) => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const MAX_WAIT_MS = 9000;
-const POLL_INTERVAL_MS = 400;
+const MAX_WAIT_MS = 25_000;
+const POLL_INTERVAL_MS = 250;
 
 export default async (req) => {
   if (req.method === "OPTIONS") {
@@ -54,7 +57,9 @@ export default async (req) => {
     MAX_WAIT_MS
   );
 
-  const store = getStore("jobs");
+  const active = getStore(ACTIVE);
+  const archive = getStore(ARCHIVE);
+
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const initial = {
     id,
@@ -62,20 +67,23 @@ export default async (req) => {
     status: "pending",
     createdAt: new Date().toISOString(),
   };
-  await store.setJSON(id, initial);
+  await active.setJSON(id, initial);
 
   const deadline = Date.now() + waitMs;
   let job = initial;
+  let done = null;
   while (Date.now() < deadline) {
     await sleep(POLL_INTERVAL_MS);
-    const fresh = await store.get(id, { type: "json" });
-    if (fresh) {
-      job = fresh;
-      if (job.status === "done" || job.status === "error") break;
+    done = await archive.get(id, { type: "json" });
+    if (done) {
+      job = done;
+      break;
     }
+    const live = await active.get(id, { type: "json" });
+    if (live) job = live;
   }
 
-  if (job.status === "done" || job.status === "error") {
+  if (done) {
     return json({
       ok: true,
       id: job.id,
