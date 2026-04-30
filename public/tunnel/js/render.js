@@ -61,7 +61,7 @@ function typewriter(el, text, speed = 32) {
   el.textContent = '';
   let i = 0;
   const tick = () => {
-    if (!el.isConnected) return;
+    if (i > 0 && !el.isConnected) return;
     if (i < text.length) {
       el.textContent += text.charAt(i++);
       setTimeout(tick, speed);
@@ -70,7 +70,7 @@ function typewriter(el, text, speed = 32) {
       if (caret) caret.classList.add('idle');
     }
   };
-  tick();
+  setTimeout(tick, 50);
 }
 
 export function messageNode(role, content) {
