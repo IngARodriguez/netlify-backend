@@ -128,11 +128,17 @@ export default async (req) => {
     }
   }
 
-  if (body && /"stream"\s*:\s*true/i.test(body)) {
-    return json({
-      error: "streaming_not_supported",
-      message: "Streaming aún no está soportado en OpenChaw. Quita 'stream: true' del body.",
-    }, 400);
+  // "Fake streaming": si el cliente pide stream:true, lo apagamos para el worker
+  // y al final formatemos la respuesta completa como un único bloque SSE.
+  let fakeStream = false;
+  let parsedBody = null;
+  if (body) {
+    try { parsedBody = JSON.parse(body); } catch {}
+    if (parsedBody && parsedBody.stream === true) {
+      fakeStream = true;
+      parsedBody.stream = false;
+      body = JSON.stringify(parsedBody);
+    }
   }
 
   const forwardHeaders = {};
@@ -198,23 +204,164 @@ export default async (req) => {
     }, 502);
   }
 
-  const responseBody = typeof resp.body === "string"
-    ? resp.body
-    : JSON.stringify(resp.body);
-
   const responseHeaders = { ...cors };
   for (const [k, v] of Object.entries(resp.headers || {})) {
     const lc = k.toLowerCase();
     if (["content-encoding", "transfer-encoding", "connection", "content-length"].includes(lc)) continue;
     if (lc.startsWith("access-control-")) continue;
+    if (fakeStream && lc === "content-type") continue;
     responseHeaders[k] = v;
   }
+
+  if (fakeStream && resp.status >= 200 && resp.status < 300) {
+    const obj = typeof resp.body === "string"
+      ? (() => { try { return JSON.parse(resp.body); } catch { return null; } })()
+      : resp.body;
+    if (obj) {
+      const sse = buildFakeStream(target.provider, obj);
+      responseHeaders["Content-Type"] = "text/event-stream; charset=utf-8";
+      responseHeaders["Cache-Control"] = "no-cache, no-transform";
+      responseHeaders["X-Accel-Buffering"] = "no";
+      return new Response(sse, { status: resp.status, headers: responseHeaders });
+    }
+  }
+
+  const responseBody = typeof resp.body === "string"
+    ? resp.body
+    : JSON.stringify(resp.body);
   if (!responseHeaders["Content-Type"] && !responseHeaders["content-type"]) {
     responseHeaders["Content-Type"] = "application/json";
   }
-
   return new Response(responseBody, {
     status: resp.status,
     headers: responseHeaders,
   });
 };
+
+function sseEvent(name, data) {
+  let out = "";
+  if (name) out += "event: " + name + "\n";
+  out += "data: " + JSON.stringify(data) + "\n\n";
+  return out;
+}
+
+function buildFakeStream(provider, full) {
+  if (provider === "anthropic") return buildAnthropicStream(full);
+  return buildOpenAIStream(full);
+}
+
+function buildAnthropicStream(msg) {
+  // Reconstruye los eventos SSE estándar de Anthropic /v1/messages a partir
+  // del response completo de /v1/messages (no streaming).
+  const blocks = Array.isArray(msg.content) ? msg.content : [];
+  let out = "";
+
+  out += sseEvent("message_start", {
+    type: "message_start",
+    message: {
+      id: msg.id,
+      type: msg.type || "message",
+      role: msg.role || "assistant",
+      model: msg.model,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: msg.usage || { input_tokens: 0, output_tokens: 0 },
+    },
+  });
+
+  blocks.forEach((block, idx) => {
+    if (block.type === "text") {
+      out += sseEvent("content_block_start", {
+        type: "content_block_start",
+        index: idx,
+        content_block: { type: "text", text: "" },
+      });
+      out += sseEvent("content_block_delta", {
+        type: "content_block_delta",
+        index: idx,
+        delta: { type: "text_delta", text: block.text || "" },
+      });
+      out += sseEvent("content_block_stop", {
+        type: "content_block_stop",
+        index: idx,
+      });
+    } else {
+      // tool_use, thinking, etc — emitirlo como bloque entero start+stop
+      out += sseEvent("content_block_start", {
+        type: "content_block_start",
+        index: idx,
+        content_block: block,
+      });
+      out += sseEvent("content_block_stop", {
+        type: "content_block_stop",
+        index: idx,
+      });
+    }
+  });
+
+  out += sseEvent("message_delta", {
+    type: "message_delta",
+    delta: {
+      stop_reason: msg.stop_reason || "end_turn",
+      stop_sequence: msg.stop_sequence ?? null,
+    },
+    usage: msg.usage || { output_tokens: 0 },
+  });
+
+  out += sseEvent("message_stop", { type: "message_stop" });
+
+  return out;
+}
+
+function buildOpenAIStream(resp) {
+  // Reconstruye SSE estándar de OpenAI /v1/chat/completions a partir
+  // del response no-streaming.
+  const id = resp.id || "chatcmpl-" + Math.random().toString(36).slice(2, 12);
+  const created = resp.created || Math.floor(Date.now() / 1000);
+  const model = resp.model || "";
+  const choices = Array.isArray(resp.choices) ? resp.choices : [];
+  let out = "";
+
+  // Primer chunk con role
+  if (choices.length) {
+    const initial = choices.map((c, i) => ({
+      index: c.index ?? i,
+      delta: { role: "assistant", content: "" },
+      logprobs: null,
+      finish_reason: null,
+    }));
+    out += "data: " + JSON.stringify({
+      id, object: "chat.completion.chunk", created, model,
+      choices: initial,
+    }) + "\n\n";
+  }
+
+  // Chunk con todo el contenido en delta.content
+  const contentChunk = choices.map((c, i) => ({
+    index: c.index ?? i,
+    delta: { content: (c.message && c.message.content) || "" },
+    logprobs: null,
+    finish_reason: null,
+  }));
+  out += "data: " + JSON.stringify({
+    id, object: "chat.completion.chunk", created, model,
+    choices: contentChunk,
+  }) + "\n\n";
+
+  // Chunk final con finish_reason
+  const finalChunk = choices.map((c, i) => ({
+    index: c.index ?? i,
+    delta: {},
+    logprobs: null,
+    finish_reason: c.finish_reason || "stop",
+  }));
+  out += "data: " + JSON.stringify({
+    id, object: "chat.completion.chunk", created, model,
+    choices: finalChunk,
+    usage: resp.usage,
+  }) + "\n\n";
+
+  out += "data: [DONE]\n\n";
+  return out;
+}
