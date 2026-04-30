@@ -1,241 +1,765 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8">
-<title>Tunnel chat</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Outpost Chat</title>
+  <style>
+    :root {
+      --bg: #f4f3ee;
+      --bg-elev: #faf9f5;
+      --surface: #ffffff;
+      --border: #e8e6dd;
+      --border-strong: #d4d1c3;
+      --text: #1f1e1b;
+      --text-mute: #6b685e;
+      --text-faint: #9c9889;
+      --accent: #c96442;
+      --accent-soft: #e9b29c;
+      --user-bubble: #ebe9df;
+      --danger: #c14a3b;
+      --ui: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+      --serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
+      --mono: ui-monospace, "SF Mono", Menlo, Monaco, "JetBrains Mono", monospace;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+      --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.10);
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--ui);
+      -webkit-font-smoothing: antialiased;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ───── Header ───── */
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: .8rem;
+      padding: .8rem 1.2rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elev);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      backdrop-filter: saturate(180%) blur(10px);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: .55rem;
+      font-weight: 600;
+      font-size: 1rem;
+      letter-spacing: -.01em;
+    }
+    .brand-mark {
+      width: 26px; height: 26px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-family: var(--serif);
+      font-weight: 700;
+      font-size: .9rem;
+      box-shadow: 0 1px 2px rgba(0,0,0,.15);
+    }
+    .header-controls {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+    }
+    .select-min {
+      appearance: none;
+      -webkit-appearance: none;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-mute);
+      font-family: var(--ui);
+      font-size: .85rem;
+      padding: .35rem 1.6rem .35rem .65rem;
+      border-radius: 8px;
+      cursor: pointer;
+      background-image:
+        linear-gradient(45deg, transparent 50%, var(--text-faint) 50%),
+        linear-gradient(135deg, var(--text-faint) 50%, transparent 50%);
+      background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+      background-size: 5px 5px, 5px 5px;
+      background-repeat: no-repeat;
+      transition: background-color .15s, border-color .15s, color .15s;
+    }
+    .select-min:hover {
+      background-color: rgba(0, 0, 0, 0.04);
+      color: var(--text);
+    }
+    .icon-btn {
+      width: 34px; height: 34px;
+      border-radius: 8px;
+      border: 0;
+      background: transparent;
+      color: var(--text-mute);
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      transition: background .15s, color .15s;
+    }
+    .icon-btn:hover {
+      background: rgba(0, 0, 0, 0.05);
+      color: var(--text);
+    }
+    .icon-btn svg { width: 18px; height: 18px; }
+
+    /* ───── Conversation ───── */
+    .conversation {
+      flex: 1;
+      overflow-y: auto;
+      padding: 2rem 1rem 8rem;
+      scroll-behavior: smooth;
+    }
+    .conv-inner {
+      max-width: 720px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+    .msg {
+      display: flex;
+      gap: .9rem;
+      align-items: flex-start;
+      animation: fadeIn .25s ease-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .avatar {
+      flex: 0 0 auto;
+      width: 30px; height: 30px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: .8rem;
+      font-weight: 600;
+      letter-spacing: -.01em;
+    }
+    .msg-user .avatar {
+      background: var(--user-bubble);
+      color: var(--text-mute);
+      font-family: var(--ui);
+    }
+    .msg-assistant .avatar {
+      background: var(--accent);
+      color: #fff;
+      font-family: var(--serif);
+      font-weight: 700;
+    }
+    .msg-body {
+      flex: 1;
+      line-height: 1.65;
+      font-size: 1rem;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      padding-top: 4px;
+    }
+    .msg-assistant .msg-body {
+      font-family: var(--serif);
+      font-size: 1.04rem;
+    }
+    .msg-user .msg-body {
+      font-family: var(--ui);
+    }
+    .msg-error .msg-body {
+      color: var(--danger);
+      font-size: .9rem;
+      font-family: var(--mono);
+      background: rgba(193, 74, 59, 0.06);
+      border: 1px solid rgba(193, 74, 59, 0.2);
+      padding: .6rem .8rem;
+      border-radius: 8px;
+    }
+
+    /* ───── Empty state ───── */
+    .empty {
+      max-width: 720px;
+      margin: 6rem auto 0;
+      text-align: center;
+      color: var(--text-mute);
+    }
+    .empty .logo-circle {
+      width: 56px; height: 56px;
+      margin: 0 auto 1.2rem;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-family: var(--serif);
+      font-weight: 700;
+      font-size: 1.6rem;
+      box-shadow: 0 4px 14px rgba(201, 100, 66, 0.25);
+    }
+    .empty h2 {
+      font-family: var(--serif);
+      font-size: 1.7rem;
+      font-weight: 500;
+      color: var(--text);
+      margin: 0 0 .4rem;
+      letter-spacing: -.01em;
+    }
+    .empty p {
+      font-size: .95rem;
+      margin: 0;
+    }
+
+    /* ───── Composer ───── */
+    .composer-wrap {
+      position: sticky;
+      bottom: 0;
+      padding: 1rem 1rem 1.2rem;
+      background: linear-gradient(to top, var(--bg) 70%, transparent);
+      pointer-events: none;
+    }
+    .composer {
+      max-width: 720px;
+      margin: 0 auto;
+      pointer-events: auto;
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: 18px;
+      padding: .65rem .65rem .55rem .9rem;
+      display: flex;
+      align-items: flex-end;
+      gap: .5rem;
+      box-shadow: var(--shadow-lg);
+      transition: border-color .15s;
+    }
+    .composer:focus-within {
+      border-color: var(--accent);
+    }
+    .composer textarea {
+      flex: 1;
+      border: 0;
+      outline: 0;
+      resize: none;
+      background: transparent;
+      font-family: var(--ui);
+      font-size: 1rem;
+      line-height: 1.5;
+      color: var(--text);
+      max-height: 220px;
+      min-height: 28px;
+      padding: .35rem 0;
+    }
+    .composer textarea::placeholder { color: var(--text-faint); }
+    .send-btn {
+      flex: 0 0 auto;
+      width: 34px; height: 34px;
+      border-radius: 50%;
+      border: 0;
+      background: var(--accent);
+      color: white;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      transition: background .15s, transform .08s, opacity .15s;
+    }
+    .send-btn:hover { background: #b15839; }
+    .send-btn:active { transform: scale(.94); }
+    .send-btn:disabled {
+      background: var(--border-strong);
+      color: var(--text-faint);
+      cursor: not-allowed;
+    }
+    .send-btn svg { width: 16px; height: 16px; }
+
+    .composer-footer {
+      max-width: 720px;
+      margin: .55rem auto 0;
+      font-size: .76rem;
+      color: var(--text-faint);
+      text-align: center;
+      pointer-events: auto;
+      min-height: 1.2em;
+    }
+    .composer-footer .dot { color: var(--text-faint); margin: 0 .35rem; }
+
+    /* ───── Settings panel (drawer) ───── */
+    .overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.25);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .18s;
+      z-index: 20;
+    }
+    .overlay.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .drawer {
+      position: fixed;
+      top: 0; right: 0; bottom: 0;
+      width: min(380px, 92vw);
+      background: var(--bg-elev);
+      border-left: 1px solid var(--border);
+      transform: translateX(100%);
+      transition: transform .22s ease-out;
+      z-index: 30;
+      display: flex;
+      flex-direction: column;
+    }
+    .drawer.open { transform: translateX(0); }
+    .drawer-header {
+      display: flex;
+      align-items: center;
+      padding: 1rem 1.2rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .drawer-header h3 {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 600;
+      flex: 1;
+    }
+    .drawer-body {
+      padding: 1.2rem;
+      overflow-y: auto;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 1.1rem;
+    }
+    .drawer-body label {
+      display: flex;
+      flex-direction: column;
+      gap: .35rem;
+    }
+    .drawer-body label > span {
+      font-size: .72rem;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--text-mute);
+      font-weight: 500;
+    }
+    .drawer-body input {
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      color: var(--text);
+      padding: .55rem .7rem;
+      border-radius: 8px;
+      font-family: var(--mono);
+      font-size: .9rem;
+      outline: 0;
+      transition: border-color .15s;
+    }
+    .drawer-body input:focus { border-color: var(--accent); }
+    .ghost-btn {
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      color: var(--text);
+      padding: .55rem .8rem;
+      border-radius: 8px;
+      font-family: var(--ui);
+      font-size: .88rem;
+      cursor: pointer;
+      transition: background .12s, border-color .12s, color .12s;
+    }
+    .ghost-btn:hover {
+      background: rgba(0, 0, 0, 0.04);
+      border-color: var(--border-strong);
+    }
+    .ghost-btn.danger {
+      color: var(--danger);
+      border-color: rgba(193, 74, 59, 0.3);
+    }
+    .ghost-btn.danger:hover {
+      background: rgba(193, 74, 59, 0.06);
+    }
+
+    /* ───── Scrollbar (subtle) ───── */
+    .conversation::-webkit-scrollbar,
+    .drawer-body::-webkit-scrollbar {
+      width: 8px;
+    }
+    .conversation::-webkit-scrollbar-thumb,
+    .drawer-body::-webkit-scrollbar-thumb {
+      background: var(--border-strong);
+      border-radius: 4px;
+    }
+
+    /* ───── Mobile ───── */
+    @media (max-width: 600px) {
+      .topbar { padding: .65rem .8rem; gap: .4rem; }
+      .brand { font-size: .92rem; }
+      .header-controls { gap: .25rem; }
+      .select-min { font-size: .8rem; padding: .3rem 1.4rem .3rem .55rem; }
+      .conversation { padding: 1.5rem .8rem 7rem; }
+      .empty { margin-top: 4rem; }
+      .empty h2 { font-size: 1.4rem; }
+      .composer-wrap { padding: .7rem .7rem 1rem; }
+    }
+  </style>
 </head>
 <body>
-<h1>Chat via tunnel</h1>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">O</span>
+      <span>Outpost Chat</span>
+    </div>
+    <div class="header-controls">
+      <select id="provider" class="select-min" aria-label="Provider">
+        <option value="openai">OpenAI</option>
+        <option value="anthropic">Anthropic</option>
+      </select>
+      <select id="model" class="select-min" aria-label="Model"></select>
+      <button class="icon-btn" id="settingsToggle" aria-label="Settings" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
 
-<p>
-  Token: <input id="token" type="password" size="60">
-  &nbsp;Provider:
-  <select id="provider">
-    <option value="openai">OpenAI</option>
-    <option value="anthropic">Anthropic</option>
-  </select>
-</p>
+  <main class="conversation" id="conversation">
+    <div class="conv-inner" id="messages"></div>
+  </main>
 
-<p>
-  Model:
-  <select id="model" style="min-width: 320px;"></select>
-  <button type="button" id="refreshModels">Cargar modelos</button>
-  &nbsp;max_tokens: <input id="maxTokens" type="number" size="6" value="2048">
-</p>
+  <div class="composer-wrap">
+    <form id="form" class="composer">
+      <textarea id="input" rows="1" placeholder="Mensaje a Outpost..."></textarea>
+      <button type="submit" id="send" class="send-btn" aria-label="Enviar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+      </button>
+    </form>
+    <div class="composer-footer">
+      <span id="status"></span>
+    </div>
+  </div>
 
-<pre id="messages" style="white-space: pre-wrap; border: 1px solid #ccc; padding: 0.5em; min-height: 300px;"></pre>
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true">
+    <div class="drawer-header">
+      <h3>Settings</h3>
+      <button class="icon-btn" id="settingsClose" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="drawer-body">
+      <label>
+        <span>JOBS_CLIENT_TOKEN</span>
+        <input id="token" type="password" autocomplete="off" placeholder="admin" />
+      </label>
+      <label>
+        <span>max tokens</span>
+        <input id="maxTokens" type="number" value="2048" min="1" />
+      </label>
+      <button type="button" id="refreshModels" class="ghost-btn">Refrescar lista de modelos</button>
+      <button type="button" id="clear" class="ghost-btn danger">Limpiar historial</button>
+    </div>
+  </aside>
 
-<form id="form">
-  <textarea id="input" rows="3" cols="80" placeholder="Escribe tu mensaje y pulsa Enviar (Ctrl+Enter para enviar)"></textarea>
-  <br>
-  <button type="submit" id="send">Enviar</button>
-  <button type="button" id="clear">Limpiar historial</button>
-  <span id="status"></span>
-</form>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const tokenInput      = $('token');
+    const providerSel     = $('provider');
+    const modelSel        = $('model');
+    const refreshBtn      = $('refreshModels');
+    const maxTokensInput  = $('maxTokens');
+    const inputEl         = $('input');
+    const messagesEl      = $('messages');
+    const conversationEl  = $('conversation');
+    const statusEl        = $('status');
+    const sendBtn         = $('send');
+    const formEl          = $('form');
+    const drawerEl        = $('drawer');
+    const overlayEl       = $('overlay');
 
-<script>
-const $ = id => document.getElementById(id);
-const tokenInput = $('token');
-const providerSel = $('provider');
-const modelSel = $('model');
-const refreshBtn = $('refreshModels');
-const maxTokensInput = $('maxTokens');
-const inputEl = $('input');
-const messagesEl = $('messages');
-const statusEl = $('status');
-const sendBtn = $('send');
-
-const DEFAULT_MODELS = {
-  openai: 'gpt-4o-mini',
-  anthropic: 'claude-opus-4-7',
-};
-
-const MODELS_URL = {
-  openai: 'https://api.openai.com/v1/models',
-  anthropic: 'https://api.anthropic.com/v1/models',
-};
-
-function getHistory() {
-  return JSON.parse(localStorage.getItem('tunnel_hist_' + providerSel.value) || '[]');
-}
-function setHistory(h) {
-  localStorage.setItem('tunnel_hist_' + providerSel.value, JSON.stringify(h));
-}
-function renderHistory() {
-  messagesEl.textContent = getHistory()
-    .map(m => '[' + m.role + ']\n' + m.content)
-    .join('\n\n');
-}
-
-function getCachedModels(provider) {
-  return JSON.parse(localStorage.getItem('tunnel_models_' + provider) || 'null');
-}
-function setCachedModels(provider, ids) {
-  localStorage.setItem('tunnel_models_' + provider, JSON.stringify(ids));
-}
-
-function populateModelSelect() {
-  const provider = providerSel.value;
-  const cached = getCachedModels(provider);
-  const ids = (cached && cached.length) ? [...cached] : [DEFAULT_MODELS[provider]];
-  const current = localStorage.getItem('tunnel_model_' + provider) || DEFAULT_MODELS[provider];
-
-  modelSel.innerHTML = '';
-  if (!ids.includes(current)) ids.unshift(current);
-  for (const id of ids) {
-    const opt = document.createElement('option');
-    opt.value = id;
-    opt.textContent = id;
-    if (id === current) opt.selected = true;
-    modelSel.appendChild(opt);
-  }
-}
-
-async function fetchModels() {
-  const token = tokenInput.value.trim();
-  if (!token) { alert('Falta el token'); return; }
-  const provider = providerSel.value;
-  refreshBtn.disabled = true;
-  statusEl.textContent = ' cargando modelos...';
-  try {
-    const r = await fetch('/api/proxy', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: MODELS_URL[provider], method: 'GET' }),
-    });
-    const data = await r.json();
-    if (!r.ok || !data.response) {
-      statusEl.textContent = ' error: ' + (data.error || 'HTTP ' + r.status);
-      return;
-    }
-    const items = data.response.body && data.response.body.data;
-    if (!Array.isArray(items)) {
-      statusEl.textContent = ' respuesta inesperada';
-      messagesEl.textContent = '[raw]\n' + JSON.stringify(data.response.body, null, 2);
-      return;
-    }
-    const ids = items.map(m => m.id).filter(Boolean).sort();
-    setCachedModels(provider, ids);
-    populateModelSelect();
-    statusEl.textContent = ' ' + ids.length + ' modelos cargados';
-  } catch (e) {
-    statusEl.textContent = ' fallo: ' + e.message;
-  } finally {
-    refreshBtn.disabled = false;
-  }
-}
-
-function buildRequest(history, prompt) {
-  const provider = providerSel.value;
-  const model = modelSel.value;
-  const maxTokens = Number(maxTokensInput.value) || 2048;
-  const messages = [...history, { role: 'user', content: prompt }];
-  if (provider === 'openai') {
-    return {
-      url: 'https://api.openai.com/v1/chat/completions',
-      body: { model, messages },
-      extract: r => r.body.choices[0].message.content,
+    const DEFAULT_MODELS = {
+      openai: 'gpt-4o-mini',
+      anthropic: 'claude-opus-4-7',
     };
-  }
-  return {
-    url: 'https://api.anthropic.com/v1/messages',
-    body: { model, max_tokens: maxTokens, messages },
-    extract: r => r.body.content[0].text,
-  };
-}
+    const MODELS_URL = {
+      openai: 'https://api.openai.com/v1/models',
+      anthropic: 'https://api.anthropic.com/v1/models',
+    };
 
-async function send(prompt) {
-  const token = tokenInput.value.trim();
-  if (!token) { alert('Falta el token'); return; }
+    /* ─── History store (per-provider, in localStorage) ─── */
+    const getHistory = () =>
+      JSON.parse(localStorage.getItem('tunnel_hist_' + providerSel.value) || '[]');
+    const setHistory = (h) =>
+      localStorage.setItem('tunnel_hist_' + providerSel.value, JSON.stringify(h));
 
-  const history = getHistory();
-  const req = buildRequest(history, prompt);
+    /* ─── Render ─── */
+    function renderHistory() {
+      const history = getHistory();
+      messagesEl.innerHTML = '';
+      if (!history.length) {
+        messagesEl.appendChild(emptyStateNode());
+        return;
+      }
+      for (const m of history) {
+        messagesEl.appendChild(messageNode(m.role, m.content));
+      }
+      requestAnimationFrame(() => {
+        conversationEl.scrollTop = conversationEl.scrollHeight;
+      });
+    }
 
-  statusEl.textContent = ' enviando...';
-  sendBtn.disabled = true;
-  const t0 = Date.now();
+    function emptyStateNode() {
+      const wrap = document.createElement('div');
+      wrap.className = 'empty';
+      const provider = providerSel.value;
+      wrap.innerHTML = `
+        <div class="logo-circle">${provider === 'anthropic' ? 'C' : 'AI'}</div>
+        <h2>¿En qué te ayudo hoy?</h2>
+        <p>Conversación con ${provider} · ${modelSel.value || 'modelo por defecto'}</p>
+      `;
+      return wrap;
+    }
 
-  try {
-    const r = await fetch('/api/proxy', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: req.url, method: 'POST', body: req.body }),
+    function messageNode(role, content) {
+      const wrap = document.createElement('div');
+      wrap.className = 'msg msg-' + role;
+      const avatar = document.createElement('div');
+      avatar.className = 'avatar';
+      avatar.textContent = role === 'user' ? 'You' : 'C';
+      const body = document.createElement('div');
+      body.className = 'msg-body';
+      body.textContent = content;
+      wrap.appendChild(avatar);
+      wrap.appendChild(body);
+      return wrap;
+    }
+
+    /* ─── Models ─── */
+    const getCachedModels = (p) =>
+      JSON.parse(localStorage.getItem('tunnel_models_' + p) || 'null');
+    const setCachedModels = (p, ids) =>
+      localStorage.setItem('tunnel_models_' + p, JSON.stringify(ids));
+
+    function populateModelSelect() {
+      const provider = providerSel.value;
+      const cached = getCachedModels(provider);
+      const ids = (cached && cached.length) ? [...cached] : [DEFAULT_MODELS[provider]];
+      const current = localStorage.getItem('tunnel_model_' + provider) || DEFAULT_MODELS[provider];
+      modelSel.innerHTML = '';
+      if (!ids.includes(current)) ids.unshift(current);
+      for (const id of ids) {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = id;
+        if (id === current) opt.selected = true;
+        modelSel.appendChild(opt);
+      }
+    }
+
+    async function fetchModels() {
+      const token = tokenInput.value.trim();
+      if (!token) { setStatus('falta el token en settings', 'error'); openDrawer(); return; }
+      const provider = providerSel.value;
+      refreshBtn.disabled = true;
+      setStatus('cargando modelos...');
+      try {
+        const r = await fetch('/api/proxy', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: MODELS_URL[provider], method: 'GET' }),
+        });
+        const data = await r.json();
+        if (!r.ok || !data.response) {
+          setStatus('error: ' + (data.error || 'HTTP ' + r.status), 'error');
+          return;
+        }
+        const items = data.response.body && data.response.body.data;
+        if (!Array.isArray(items)) {
+          setStatus('respuesta inesperada', 'error');
+          return;
+        }
+        const ids = items.map((m) => m.id).filter(Boolean).sort();
+        setCachedModels(provider, ids);
+        populateModelSelect();
+        setStatus(ids.length + ' modelos disponibles');
+      } catch (e) {
+        setStatus('fallo: ' + e.message, 'error');
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    }
+
+    /* ─── Status ─── */
+    function setStatus(text, kind = '') {
+      statusEl.textContent = text || '';
+      statusEl.style.color = kind === 'error' ? 'var(--danger)' : '';
+    }
+    function statusFooter() {
+      const parts = [providerSel.value, modelSel.value, maxTokensInput.value + ' tokens'];
+      setStatus(parts.filter(Boolean).join(' · '));
+    }
+
+    /* ─── Send ─── */
+    function buildRequest(history, prompt) {
+      const provider = providerSel.value;
+      const model = modelSel.value;
+      const maxTokens = Number(maxTokensInput.value) || 2048;
+      const messages = [...history, { role: 'user', content: prompt }];
+      if (provider === 'openai') {
+        return {
+          url: 'https://api.openai.com/v1/chat/completions',
+          body: { model, messages },
+          extract: (r) => r.body.choices[0].message.content,
+        };
+      }
+      return {
+        url: 'https://api.anthropic.com/v1/messages',
+        body: { model, max_tokens: maxTokens, messages },
+        extract: (r) => r.body.content[0].text,
+      };
+    }
+
+    async function send(prompt) {
+      const token = tokenInput.value.trim();
+      if (!token) {
+        setStatus('falta el token en settings', 'error');
+        openDrawer();
+        return;
+      }
+      const history = getHistory();
+      const newHistory = [...history, { role: 'user', content: prompt }];
+      setHistory(newHistory);
+      renderHistory();
+
+      sendBtn.disabled = true;
+      setStatus('pensando...');
+      const t0 = Date.now();
+      try {
+        const req = buildRequest(history, prompt);
+        const r = await fetch('/api/proxy', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: req.url, method: 'POST', body: req.body }),
+        });
+        const data = await r.json();
+        if (!r.ok) {
+          setStatus('HTTP ' + r.status + ': ' + (data.error || ''), 'error');
+          appendInline('error', JSON.stringify(data, null, 2));
+          return;
+        }
+        if (data.status !== 'done' || !data.response) {
+          setStatus('status=' + data.status + ' ' + (data.message || data.error || ''), 'error');
+          return;
+        }
+        let text;
+        try { text = req.extract(data.response); }
+        catch (e) {
+          setStatus('parse error: ' + e.message, 'error');
+          appendInline('error', JSON.stringify(data.response, null, 2));
+          return;
+        }
+        setHistory([...newHistory, { role: 'assistant', content: text }]);
+        renderHistory();
+        setStatus('ok · ' + (Date.now() - t0) + ' ms');
+      } catch (e) {
+        setStatus('fallo: ' + e.message, 'error');
+      } finally {
+        sendBtn.disabled = false;
+      }
+    }
+
+    function appendInline(kind, text) {
+      const node = messageNode(kind, text);
+      messagesEl.appendChild(node);
+      conversationEl.scrollTop = conversationEl.scrollHeight;
+    }
+
+    /* ─── Drawer ─── */
+    function openDrawer() {
+      drawerEl.classList.add('open');
+      overlayEl.classList.add('open');
+      drawerEl.setAttribute('aria-hidden', 'false');
+    }
+    function closeDrawer() {
+      drawerEl.classList.remove('open');
+      overlayEl.classList.remove('open');
+      drawerEl.setAttribute('aria-hidden', 'true');
+    }
+
+    /* ─── Auto-resize textarea ─── */
+    function autoresize() {
+      inputEl.style.height = 'auto';
+      inputEl.style.height = Math.min(inputEl.scrollHeight, 220) + 'px';
+    }
+
+    /* ─── Events ─── */
+    formEl.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const prompt = inputEl.value.trim();
+      if (!prompt) return;
+      inputEl.value = '';
+      autoresize();
+      send(prompt);
     });
-    const data = await r.json();
-    if (!r.ok) {
-      statusEl.textContent = ' HTTP ' + r.status + ': ' + (data.error || '');
-      return;
-    }
-    if (data.status !== 'done' || !data.response) {
-      statusEl.textContent = ' status=' + data.status + ' ' + (data.message || data.error || '');
-      return;
-    }
-    let text;
-    try { text = req.extract(data.response); }
-    catch (e) {
-      statusEl.textContent = ' parse error: ' + e.message;
-      messagesEl.textContent += '\n\n[raw response]\n' + JSON.stringify(data.response, null, 2);
-      return;
-    }
-    const newHistory = [...history,
-      { role: 'user', content: prompt },
-      { role: 'assistant', content: text },
-    ];
-    setHistory(newHistory);
-    renderHistory();
-    statusEl.textContent = ' ok (' + (Date.now() - t0) + 'ms)';
-  } catch (e) {
-    statusEl.textContent = ' fallo: ' + e.message;
-  } finally {
-    sendBtn.disabled = false;
-  }
-}
 
-$('form').addEventListener('submit', e => {
-  e.preventDefault();
-  const prompt = inputEl.value.trim();
-  if (!prompt) return;
-  inputEl.value = '';
-  send(prompt);
-});
+    inputEl.addEventListener('input', autoresize);
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        formEl.requestSubmit();
+      }
+    });
 
-$('clear').addEventListener('click', () => {
-  if (confirm('Borrar historial de ' + providerSel.value + '?')) {
-    setHistory([]);
-    renderHistory();
-  }
-});
+    $('clear').addEventListener('click', () => {
+      if (confirm('¿Borrar historial de ' + providerSel.value + '?')) {
+        setHistory([]);
+        renderHistory();
+        statusFooter();
+        closeDrawer();
+      }
+    });
 
-inputEl.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-    e.preventDefault();
-    $('form').requestSubmit();
-  }
-});
+    tokenInput.addEventListener('change', () => {
+      localStorage.setItem('tunnel_token', tokenInput.value.trim());
+    });
+    modelSel.addEventListener('change', () => {
+      localStorage.setItem('tunnel_model_' + providerSel.value, modelSel.value);
+      statusFooter();
+    });
+    maxTokensInput.addEventListener('change', () => {
+      localStorage.setItem('tunnel_max_tokens', maxTokensInput.value);
+      statusFooter();
+    });
+    providerSel.addEventListener('change', () => {
+      localStorage.setItem('tunnel_provider', providerSel.value);
+      populateModelSelect();
+      renderHistory();
+      statusFooter();
+    });
+    refreshBtn.addEventListener('click', fetchModels);
+    $('settingsToggle').addEventListener('click', openDrawer);
+    $('settingsClose').addEventListener('click', closeDrawer);
+    overlayEl.addEventListener('click', closeDrawer);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeDrawer();
+    });
 
-tokenInput.addEventListener('change', () => {
-  localStorage.setItem('tunnel_token', tokenInput.value.trim());
-});
-modelSel.addEventListener('change', () => {
-  localStorage.setItem('tunnel_model_' + providerSel.value, modelSel.value);
-});
-maxTokensInput.addEventListener('change', () => {
-  localStorage.setItem('tunnel_max_tokens', maxTokensInput.value);
-});
-providerSel.addEventListener('change', () => {
-  localStorage.setItem('tunnel_provider', providerSel.value);
-  populateModelSelect();
-  renderHistory();
-});
-refreshBtn.addEventListener('click', fetchModels);
-
-(function init() {
-  tokenInput.value = localStorage.getItem('tunnel_token') || '';
-  providerSel.value = localStorage.getItem('tunnel_provider') || 'openai';
-  maxTokensInput.value = localStorage.getItem('tunnel_max_tokens') || '2048';
-  populateModelSelect();
-  renderHistory();
-})();
-</script>
+    /* ─── Init ─── */
+    (function init() {
+      tokenInput.value     = localStorage.getItem('tunnel_token') || '';
+      providerSel.value    = localStorage.getItem('tunnel_provider') || 'openai';
+      maxTokensInput.value = localStorage.getItem('tunnel_max_tokens') || '2048';
+      populateModelSelect();
+      renderHistory();
+      statusFooter();
+      autoresize();
+      inputEl.focus();
+    })();
+  </script>
 </body>
 </html>
