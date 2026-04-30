@@ -38,6 +38,13 @@ export function requiresResponsesAPI(modelId) {
   return /-pro(\b|-)/.test(id) || /-deep-research(\b|-)/.test(id);
 }
 
+// OpenAI image-generation models (use /v1/images/generations)
+export function isImageModel(modelId) {
+  if (!modelId) return false;
+  const id = modelId.toLowerCase();
+  return /^dall-e/.test(id) || /^gpt-image/.test(id) || /^chatgpt-image/.test(id);
+}
+
 export function maxTokensForModel(modelId) {
   if (!modelId) return 4096;
   if (MAX_TOKENS_OVERRIDES[modelId]) return MAX_TOKENS_OVERRIDES[modelId];

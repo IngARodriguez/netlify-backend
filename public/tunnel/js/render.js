@@ -87,7 +87,10 @@ export function messageNode(role, content) {
   }
   const body = document.createElement('div');
   body.className = 'msg-body';
-  if (role === 'assistant') {
+  if (role === 'assistant' && Array.isArray(content)) {
+    body.classList.add('user-content');
+    renderUserParts(body, content);
+  } else if (role === 'assistant') {
     body.classList.add('md');
     body.innerHTML = renderMarkdown(typeof content === 'string' ? content : '');
   } else if (role === 'user' && Array.isArray(content)) {

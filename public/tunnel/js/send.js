@@ -9,7 +9,7 @@ import { renderHistory, typingNode, appendInline } from './render.js';
 import {
   pendingAttachments, clearAttachments, buildContentParts,
 } from './attachments.js';
-import { requiresResponsesAPI } from './models.js';
+import { requiresResponsesAPI, isImageModel } from './models.js';
 
 function buildRequest(history, userMessage) {
   const provider = providerSel.value;
@@ -18,6 +18,14 @@ function buildRequest(history, userMessage) {
   const systemPrompt = (getCurrentChat().systemPrompt || '').trim();
 
   if (provider === 'openai') {
+    if (isImageModel(model)) {
+      const promptText = extractPromptText(userMessage);
+      return {
+        url: 'https://api.openai.com/v1/images/generations',
+        body: { model, prompt: promptText, n: 1, size: '1024x1024' },
+        extract: extractImageResponse,
+      };
+    }
     if (requiresResponsesAPI(model)) {
       const input = [...history, userMessage].map(toResponsesInput);
       const body = { model, input, max_output_tokens: maxTokens };
@@ -67,6 +75,33 @@ function toResponsesInput(msg) {
     return p;
   });
   return { role: msg.role, content: parts };
+}
+
+function extractPromptText(msg) {
+  if (typeof msg.content === 'string') return msg.content;
+  if (Array.isArray(msg.content)) {
+    return msg.content
+      .filter((p) => p.type === 'text')
+      .map((p) => p.text || '')
+      .join('\n')
+      .trim();
+  }
+  return '';
+}
+
+function extractImageResponse(r) {
+  const item = r.body && Array.isArray(r.body.data) ? r.body.data[0] : null;
+  if (!item) return '';
+  if (item.b64_json) {
+    return [{
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: item.b64_json },
+    }];
+  }
+  if (item.url) {
+    return [{ type: 'image_url', image_url: { url: item.url } }];
+  }
+  return '';
 }
 
 function extractResponsesText(r) {

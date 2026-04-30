@@ -932,23 +932,24 @@ body {
   background: rgba(201, 100, 66, 0.05);
 }
 
-/* User message attachments rendered inline */
-.msg-user .msg-body.user-content {
+/* Multi-part message bodies (used by user attachments and by image-model
+   responses that come back as a single image part). */
+.msg-body.user-content {
   display: flex;
   flex-direction: column;
   gap: .55rem;
   white-space: normal;
 }
-.msg-user .user-text { white-space: pre-wrap; }
-.msg-user .user-image {
-  max-width: min(360px, 100%);
-  max-height: 280px;
-  border-radius: 10px;
+.user-content .user-text { white-space: pre-wrap; }
+.user-content .user-image {
+  max-width: min(420px, 100%);
+  max-height: 420px;
+  border-radius: 12px;
   cursor: zoom-in;
   border: 1px solid var(--border);
   display: block;
 }
-.msg-user .user-doc-chip {
+.user-content .user-doc-chip {
   display: inline-flex;
   align-items: center;
   gap: .45rem;
@@ -961,17 +962,17 @@ body {
   align-self: flex-start;
   max-width: 100%;
 }
-.msg-user .user-doc-chip svg {
+.user-content .user-doc-chip svg {
   width: 16px; height: 16px;
   color: var(--accent);
   flex-shrink: 0;
 }
-.msg-user .user-doc-chip-name {
+.user-content .user-doc-chip-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.msg-user .user-doc-chip-size {
+.user-content .user-doc-chip-size {
   color: var(--text-faint);
   font-family: var(--mono);
   font-size: .7rem;
