@@ -49,6 +49,35 @@
       color: #075985;
     }
     .method.post { background: #dcfce7; color: #14532d; }
+    .method.del  { background: #fee2e2; color: #7f1d1d; }
+    .maint {
+      margin-top: 1rem;
+      padding: 1rem 1.25rem;
+      background: #fafafa;
+      border: 1px solid #e5e5e5;
+      border-radius: 8px;
+    }
+    .maint p { margin: 0 0 .75rem; color: #555; font-size: .9rem; }
+    .maint button {
+      padding: .5rem .9rem;
+      font-size: .9rem;
+      border: 1px solid #d4d4d4;
+      background: white;
+      border-radius: 6px;
+      cursor: pointer;
+      color: #b91c1c;
+    }
+    .maint button:hover { background: #fef2f2; border-color: #b91c1c; }
+    .maint button:disabled { opacity: .5; cursor: not-allowed; }
+    .maint-status {
+      margin-top: .6rem;
+      font-size: .85rem;
+      color: #666;
+      font-family: ui-monospace, monospace;
+      min-height: 1.1em;
+    }
+    .maint-status.ok    { color: #14532d; }
+    .maint-status.error { color: #7f1d1d; }
   </style>
 </head>
 <body>
@@ -77,7 +106,61 @@
       <tr><td><span class="method">GET</span></td><td><code>/api/jobs/:id</code></td><td>Bearer <code>JOBS_CLIENT_TOKEN</code></td><td>Consulta estado / resultado</td></tr>
       <tr><td><span class="method post">POST</span></td><td><code>/api/run</code></td><td>Bearer <code>JOBS_CLIENT_TOKEN</code></td><td>Ejecuta comando y espera ≤25 s</td></tr>
       <tr><td><span class="method post">POST</span></td><td><code>/api/proxy</code></td><td>Bearer <code>JOBS_CLIENT_TOKEN</code></td><td>Proxy HTTP saliente vía worker</td></tr>
+      <tr><td><span class="method del">DEL</span></td><td><code>/api/jobs/archive</code></td><td>Bearer <code>JOBS_CLIENT_TOKEN</code></td><td>Vacía todo el store de archivo</td></tr>
+      <tr><td><span class="method del">DEL</span></td><td><code>/api/jobs/active</code></td><td>Bearer <code>JOBS_CLIENT_TOKEN</code></td><td>Vacía todo el store activo</td></tr>
     </tbody>
   </table>
+
+  <h2>Mantenimiento</h2>
+  <div class="maint">
+    <p>Borra los blobs acumulados en <code>jobs-archive</code> y <code>jobs-active</code>. Útil para no acumular peticiones HTTP / shell pasadas.</p>
+    <button id="cleanBtn" type="button">Limpiar blobs acumulados</button>
+    <div id="cleanStatus" class="maint-status"></div>
+  </div>
+
+  <script>
+    document.getElementById('cleanBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('cleanBtn');
+      const out = document.getElementById('cleanStatus');
+      const setOut = (text, kind = '') => {
+        out.className = 'maint-status' + (kind ? ' ' + kind : '');
+        out.textContent = text;
+      };
+
+      let token = localStorage.getItem('JOBS_CLIENT_TOKEN') || '';
+      if (!token) {
+        token = (prompt('JOBS_CLIENT_TOKEN:') || '').trim();
+        if (!token) { setOut('Cancelado.'); return; }
+        localStorage.setItem('JOBS_CLIENT_TOKEN', token);
+      }
+
+      if (!confirm('¿Borrar todos los blobs de archive y active? Esta acción no se puede deshacer.')) return;
+
+      btn.disabled = true;
+      setOut('Limpiando...');
+      try {
+        const headers = { 'Authorization': 'Bearer ' + token };
+        const [r1, r2] = await Promise.all([
+          fetch('/api/jobs/archive', { method: 'DELETE', headers }),
+          fetch('/api/jobs/active',  { method: 'DELETE', headers }),
+        ]);
+        const [d1, d2] = await Promise.all([r1.json(), r2.json()]);
+        if (!r1.ok || !r2.ok) {
+          const err = (d1.error || '') + ' ' + (d2.error || '');
+          setOut('Error: ' + err.trim(), 'error');
+          if (r1.status === 401 || r2.status === 401) {
+            localStorage.removeItem('JOBS_CLIENT_TOKEN');
+            setOut('Token inválido. Vuelve a intentarlo.', 'error');
+          }
+          return;
+        }
+        setOut('OK · archive=' + d1.deleted + ' · active=' + d2.deleted, 'ok');
+      } catch (e) {
+        setOut('Fallo: ' + e.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
 </body>
 </html>

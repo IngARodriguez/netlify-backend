@@ -145,6 +145,24 @@ export default async (req) => {
     return json({ ok: true });
   }
 
+  // DELETE /api/jobs/archive  → cliente vacía todo el store de archive
+  if (req.method === "DELETE" && parts.length === 3 && parts[2] === "archive") {
+    if (!bearer(req, clientToken)) return json({ error: "Unauthorized" }, 401);
+    const store = getStore({ name: ARCHIVE, consistency: "strong" });
+    const { blobs } = await store.list();
+    await Promise.all(blobs.map((b) => store.delete(b.key)));
+    return json({ ok: true, deleted: blobs.length, store: "archive" });
+  }
+
+  // DELETE /api/jobs/active  → cliente vacía todo el store de active
+  if (req.method === "DELETE" && parts.length === 3 && parts[2] === "active") {
+    if (!bearer(req, clientToken)) return json({ error: "Unauthorized" }, 401);
+    const store = getStore({ name: ACTIVE, consistency: "strong" });
+    const { blobs } = await store.list();
+    await Promise.all(blobs.map((b) => store.delete(b.key)));
+    return json({ ok: true, deleted: blobs.length, store: "active" });
+  }
+
   // DELETE /api/jobs/:id  → cliente borra de cualquier store
   if (req.method === "DELETE" && parts.length === 3) {
     if (!bearer(req, clientToken)) return json({ error: "Unauthorized" }, 401);
