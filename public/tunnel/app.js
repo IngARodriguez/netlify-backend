@@ -506,15 +506,112 @@ function renderHistory() {
   });
 }
 
+const FALLBACK_GREETINGS = [
+  '¿Qué quieres?',
+  'Disparas tú.',
+  '¿Qué tienes para mí?',
+  'Aquí estoy.',
+  'Adelante, sin rodeos.',
+  'Cuéntame algo interesante.',
+  '¿Qué construimos hoy?',
+  'Tu turno.',
+  'Listo cuando lo estés.',
+  '¿En qué andamos?',
+  'Sin filtros, ¿qué necesitas?',
+  '¿Qué exploramos hoy?',
+  'Habla, te escucho.',
+  'A trabajar.',
+  '¿Por dónde empezamos?',
+];
+const FAST_MODEL = {
+  openai: 'gpt-4o-mini',
+  anthropic: 'claude-haiku-4-5-20251001',
+};
+const GREETING_PROMPT = [
+  'Eres el saludo de bienvenida de un chat llamado "Outpost".',
+  'Devuelve UNA sola frase muy corta (máx 10 palabras), creativa, ingeniosa o peculiar, en español, para abrir conversación.',
+  'Sin comillas, sin emojis, sin explicación, sin saludos típicos como "hola" o "en qué te ayudo".',
+  'Ejemplos del tono (no copies, inventa otra distinta):',
+  '- "¿Qué quieres?"',
+  '- "Disparas tú."',
+  '- "Aquí estoy, sin promesas."',
+  '- "¿Qué construimos hoy?"',
+].join('\n');
+
+function pickFallbackGreeting() {
+  return FALLBACK_GREETINGS[Math.floor(Math.random() * FALLBACK_GREETINGS.length)];
+}
+
+async function fetchDynamicGreeting(controller) {
+  const token = tokenInput.value.trim();
+  if (!token) return null;
+  const provider = providerSel.value;
+  const model = FAST_MODEL[provider];
+  if (!model) return null;
+
+  let url, body, extract;
+  if (provider === 'openai') {
+    url = 'https://api.openai.com/v1/chat/completions';
+    body = {
+      model,
+      messages: [{ role: 'user', content: GREETING_PROMPT }],
+      max_tokens: 50,
+      temperature: 1.0,
+    };
+    extract = (r) => r.body.choices[0].message.content;
+  } else {
+    url = 'https://api.anthropic.com/v1/messages';
+    body = {
+      model,
+      max_tokens: 50,
+      temperature: 1.0,
+      messages: [{ role: 'user', content: GREETING_PROMPT }],
+    };
+    extract = (r) => r.body.content[0].text;
+  }
+
+  try {
+    const r = await fetch('/api/proxy', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, method: 'POST', body, timeoutMs: 15000 }),
+      signal: controller && controller.signal,
+    });
+    if (!r.ok) return null;
+    const data = await r.json();
+    if (data.status !== 'done' || !data.response) return null;
+    let text = String(extract(data.response) || '').trim();
+    text = text.replace(/^[«"'`]+|[»"'`]+$/g, '').trim();
+    if (!text || text.length > 100) return null;
+    return text;
+  } catch {
+    return null;
+  }
+}
+
+let greetingAbort = null;
+
 function emptyStateNode() {
   const wrap = document.createElement('div');
   wrap.className = 'empty';
   const provider = providerSel.value;
+  const greeting = pickFallbackGreeting();
   wrap.innerHTML = `
     <div class="logo-circle">${brandSVG(provider)}</div>
-    <h2>¿En qué te ayudo hoy?</h2>
-    <p>Conversación con ${provider} · ${modelSel.value || 'modelo por defecto'}</p>
+    <h2 class="greeting-text">${escapeHtml(greeting)}</h2>
+    <p>${escapeHtml(provider)} · ${escapeHtml(modelSel.value || 'modelo por defecto')}</p>
   `;
+  if (greetingAbort) greetingAbort.abort();
+  greetingAbort = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  fetchDynamicGreeting(greetingAbort).then((fresh) => {
+    if (!fresh) return;
+    if (!wrap.isConnected) return;
+    const h2 = wrap.querySelector('.greeting-text');
+    if (h2) {
+      h2.textContent = fresh;
+      h2.classList.add('greeting-fresh');
+    }
+  });
   return wrap;
 }
 

@@ -444,10 +444,16 @@ body {
   color: var(--text);
   margin: 0 0 .4rem;
   letter-spacing: -.01em;
+  min-height: 2.5rem;
 }
 .empty p {
   font-size: .95rem;
   margin: 0;
+}
+.greeting-fresh { animation: greeting-pop .35s ease-out; }
+@keyframes greeting-pop {
+  from { opacity: .25; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 /* ───── Composer ───── */
