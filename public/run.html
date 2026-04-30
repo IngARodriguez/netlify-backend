@@ -2,49 +2,265 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <title>Run command on Theia</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Run command</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1rem; }
-    label { display: block; margin: .8rem 0 .3rem; font-weight: 600; }
-    input, textarea { width: 100%; font-family: monospace; box-sizing: border-box; padding: .5rem; }
-    textarea { height: 100px; }
-    pre { background: #111; color: #0f0; padding: 1rem; border-radius: 6px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
-    button { padding: .6rem 1.2rem; font-size: 1rem; cursor: pointer; margin-top: .8rem; }
-    .muted { color: #666; font-size: .9rem; }
-    .row { display: flex; gap: 1rem; }
-    .row > * { flex: 1; }
-    .pill { display: inline-block; padding: .15rem .55rem; border-radius: 99px; font-size: .8rem; font-weight: 600; }
-    .pending { background: #fde68a; color: #92400e; }
-    .running { background: #bfdbfe; color: #1e3a8a; }
-    .done    { background: #bbf7d0; color: #14532d; }
-    .error   { background: #fecaca; color: #7f1d1d; }
+    :root {
+      --bg: #000;
+      --window: #1c1c1e;
+      --window-header: #2c2c2e;
+      --border: #38383a;
+      --text: #f5f5f7;
+      --text-mute: #8e8e93;
+      --text-faint: #636366;
+      --accent: #0a84ff;
+      --green: #30d158;
+      --amber: #ff9f0a;
+      --red: #ff453a;
+      --mono: ui-monospace, "SF Mono", Menlo, Monaco, "JetBrains Mono", monospace;
+      --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--ui);
+      -webkit-font-smoothing: antialiased;
+    }
+    body {
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 2.5rem 1rem 4rem;
+      background:
+        radial-gradient(circle at 15% 10%, rgba(10, 132, 255, 0.10), transparent 45%),
+        radial-gradient(circle at 90% 90%, rgba(48, 209, 88, 0.06), transparent 40%),
+        var(--bg);
+    }
+    .window {
+      width: 100%;
+      max-width: 760px;
+      background: var(--window);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow:
+        0 30px 70px rgba(0, 0, 0, 0.55),
+        0 0 0 1px rgba(255, 255, 255, 0.04);
+    }
+    .titlebar {
+      background: var(--window-header);
+      padding: .65rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .traffic { display: flex; gap: 8px; }
+    .traffic span {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      background: var(--text-faint);
+    }
+    .traffic .r { background: #ff5f57; }
+    .traffic .y { background: #febc2e; }
+    .traffic .g { background: #28c840; }
+    .titlebar .title {
+      flex: 1;
+      text-align: center;
+      font-size: .82rem;
+      color: var(--text-mute);
+      font-weight: 500;
+      margin-right: 56px;
+    }
+    .body { padding: 1.4rem 1.5rem 1.5rem; }
+    .field {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      margin-bottom: 1rem;
+    }
+    .field label {
+      font-size: .7rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--text-mute);
+      min-width: 64px;
+    }
+    input, textarea {
+      flex: 1;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: .9rem;
+      padding: .55rem .75rem;
+      border-radius: 8px;
+      outline: none;
+      transition: border-color .12s, background .12s;
+    }
+    input::placeholder, textarea::placeholder { color: var(--text-faint); }
+    input:focus, textarea:focus {
+      border-color: var(--accent);
+      background: rgba(10, 132, 255, 0.07);
+    }
+    .prompt { position: relative; }
+    .prompt::before {
+      content: "$";
+      position: absolute;
+      left: .85rem;
+      top: .55rem;
+      color: var(--green);
+      font-family: var(--mono);
+      font-size: .9rem;
+      pointer-events: none;
+    }
+    .prompt textarea {
+      padding-left: 2rem;
+      min-height: 92px;
+      resize: vertical;
+      line-height: 1.45;
+    }
+    .actions {
+      display: flex;
+      gap: .5rem;
+      margin: 1.2rem 0 1rem;
+    }
+    button {
+      flex: 1;
+      background: var(--accent);
+      color: white;
+      border: 0;
+      padding: .65rem 1rem;
+      border-radius: 9px;
+      font-family: var(--ui);
+      font-size: .92rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: filter .12s, transform .06s;
+    }
+    button:hover { filter: brightness(1.1); }
+    button:active { transform: scale(0.985); }
+    button.secondary {
+      background: rgba(255, 255, 255, 0.07);
+      color: var(--text);
+    }
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+      margin: 0 0 1.1rem;
+    }
+    .status-row .label {
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      font-size: .7rem;
+      color: var(--text-mute);
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: .25rem .65rem;
+      border-radius: 99px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-mute);
+      font-size: .78rem;
+      font-weight: 500;
+      font-family: var(--mono);
+    }
+    .pill::before {
+      content: "";
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--text-faint);
+    }
+    .pill.pending::before { background: var(--amber); animation: pulse 1.4s infinite; }
+    .pill.running::before { background: var(--accent); animation: pulse .9s infinite; }
+    .pill.done::before    { background: var(--green); }
+    .pill.error::before   { background: var(--red); }
+    .pill.pending { color: var(--amber); }
+    .pill.running { color: var(--accent); }
+    .pill.done    { color: var(--green); }
+    .pill.error   { color: var(--red); }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .35; }
+    }
+    .section { margin-top: 1.1rem; }
+    .section h4 {
+      margin: 0 0 .4rem;
+      font-size: .7rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--text-mute);
+      font-weight: 600;
+    }
+    .section.stderr h4 { color: var(--red); }
+    .out {
+      background: #0a0a0a;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: .75rem .9rem;
+      font-family: var(--mono);
+      font-size: .82rem;
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow: auto;
+      max-height: 260px;
+      margin: 0;
+    }
+    .out.empty { color: var(--text-faint); }
+    .section.stderr .out { border-color: rgba(255, 69, 58, 0.25); }
   </style>
 </head>
 <body>
-  <h1>Ejecutar comando en Theia</h1>
-  <p class="muted">
-    Envía el comando con <code>POST /api/run</code> (espera el resultado hasta 9 s) o
-    cae en cola con <code>POST /api/jobs</code> + polling. El token se guarda en localStorage.
-  </p>
+  <main class="window">
+    <header class="titlebar">
+      <div class="traffic">
+        <span class="r"></span>
+        <span class="y"></span>
+        <span class="g"></span>
+      </div>
+      <div class="title">run — outpost</div>
+    </header>
 
-  <label for="token">JOBS_CLIENT_TOKEN</label>
-  <input id="token" type="password" placeholder="pega aquí tu JOBS_CLIENT_TOKEN" />
+    <div class="body">
+      <div class="field">
+        <label for="token">token</label>
+        <input id="token" type="password" placeholder="JOBS_CLIENT_TOKEN" autocomplete="off" />
+      </div>
 
-  <label for="command">Comando</label>
-  <textarea id="command" placeholder="ls -la /home/project">uname -a && pwd && ls</textarea>
+      <div class="field prompt">
+        <textarea id="command" spellcheck="false">uname -a && pwd && ls</textarea>
+      </div>
 
-  <div class="row">
-    <button id="run">Run (sincrónico)</button>
-    <button id="enqueue">Enqueue + polling</button>
-  </div>
+      <div class="actions">
+        <button id="run">Run</button>
+        <button id="enqueue" class="secondary">Enqueue + polling</button>
+      </div>
 
-  <h3>Estado: <span id="status" class="pill">—</span></h3>
-  <h3>stdout</h3>
-  <pre id="stdout">—</pre>
-  <h3>stderr</h3>
-  <pre id="stderr">—</pre>
-  <h3>Meta</h3>
-  <pre id="meta">—</pre>
+      <div class="status-row">
+        <span class="label">status</span>
+        <span id="status" class="pill">idle</span>
+      </div>
+
+      <div class="section">
+        <h4>stdout</h4>
+        <pre id="stdout" class="out empty">—</pre>
+      </div>
+      <div class="section stderr">
+        <h4>stderr</h4>
+        <pre id="stderr" class="out empty">—</pre>
+      </div>
+      <div class="section">
+        <h4>meta</h4>
+        <pre id="meta" class="out empty">—</pre>
+      </div>
+    </div>
+  </main>
 
   <script>
     const $ = (id) => document.getElementById(id);
@@ -56,23 +272,29 @@
 
     const setStatus = (s) => {
       const el = $("status");
-      el.textContent = s || "—";
+      el.textContent = s || "idle";
       el.className = "pill " + (s || "");
+    };
+    const setOut = (id, val) => {
+      const el = $(id);
+      const v = (val ?? "").toString();
+      el.textContent = v.length ? v : "—";
+      el.classList.toggle("empty", !v.length);
     };
     const reset = () => {
       setStatus("");
-      $("stdout").textContent = "—";
-      $("stderr").textContent = "—";
-      $("meta").textContent = "—";
+      setOut("stdout", "");
+      setOut("stderr", "");
+      setOut("meta", "");
     };
     const render = (job) => {
       setStatus(job.status);
-      $("stdout").textContent = job.stdout ?? "—";
-      $("stderr").textContent = job.stderr ?? "—";
-      $("meta").textContent = JSON.stringify(
+      setOut("stdout", job.stdout);
+      setOut("stderr", job.stderr);
+      setOut("meta", JSON.stringify(
         { id: job.id, exitCode: job.exitCode, durationMs: job.durationMs, error: job.error },
         null, 2
-      );
+      ));
     };
 
     const headers = () => ({
@@ -92,18 +314,18 @@
         const data = await res.json();
         if (!res.ok) {
           setStatus("error");
-          $("stderr").textContent = JSON.stringify(data, null, 2);
+          setOut("stderr", JSON.stringify(data, null, 2));
           return;
         }
         if (data.status === "pending" || data.status === "running") {
-          $("meta").textContent = "Sigue corriendo. id=" + data.id + " — pulsa 'Enqueue + polling' o reintenta /api/jobs/" + data.id;
+          setOut("meta", "Sigue corriendo. id=" + data.id + " — usa 'Enqueue + polling' o consulta /api/jobs/" + data.id);
           setStatus(data.status);
           return;
         }
         render(data);
       } catch (err) {
         setStatus("error");
-        $("stderr").textContent = err.message;
+        setOut("stderr", err.message);
       }
     });
 
@@ -119,11 +341,11 @@
         const j1 = await r1.json();
         if (!r1.ok) {
           setStatus("error");
-          $("stderr").textContent = JSON.stringify(j1, null, 2);
+          setOut("stderr", JSON.stringify(j1, null, 2));
           return;
         }
         const id = j1.id;
-        $("meta").textContent = "id=" + id + " — polling cada 1 s...";
+        setOut("meta", "id=" + id + " — polling cada 1s...");
         const deadline = Date.now() + 60_000;
         while (Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 1000));
@@ -131,7 +353,7 @@
           const j2 = await r2.json();
           if (!r2.ok) {
             setStatus("error");
-            $("stderr").textContent = JSON.stringify(j2, null, 2);
+            setOut("stderr", JSON.stringify(j2, null, 2));
             return;
           }
           const job = j2.job;
@@ -142,10 +364,10 @@
           }
         }
         setStatus("error");
-        $("stderr").textContent = "Timeout en polling tras 60s";
+        setOut("stderr", "Timeout en polling tras 60s");
       } catch (err) {
         setStatus("error");
-        $("stderr").textContent = err.message;
+        setOut("stderr", err.message);
       }
     });
   </script>
