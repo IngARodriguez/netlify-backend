@@ -12,6 +12,9 @@ const sendBtn         = $('send');
 const formEl          = $('form');
 const drawerEl        = $('drawer');
 const overlayEl       = $('overlay');
+const attachBarEl     = $('attachBar');
+const attachBtnEl     = $('attachBtn');
+const fileInputEl     = $('fileInput');
 
 const DEFAULT_MODELS = {
   openai: 'gpt-4o-mini',
@@ -89,6 +92,186 @@ function updateMaxTokensSlider() {
   paintRangeFill(maxTokensInput);
 }
 
+/* ─── Attachments ─── */
+const ATTACH_LIMIT_BYTES = 5 * 1024 * 1024;
+const ATTACH_LIMIT_COUNT = 3;
+const IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+const TEXT_EXTS = ['.txt', '.md', '.json', '.csv', '.js', '.ts', '.tsx', '.jsx',
+  '.py', '.css', '.html', '.xml', '.yml', '.yaml', '.sh', '.log', '.toml',
+  '.go', '.rb', '.rs', '.java', '.c', '.cpp', '.h', '.sql'];
+const ATTACH_ICONS = {
+  pdf:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+  text: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>',
+};
+const pendingAttachments = [];
+
+function classifyFile(file) {
+  if (IMAGE_MIME.has(file.type)) return 'image';
+  if (file.type === 'application/pdf') return 'pdf';
+  const lc = (file.name || '').toLowerCase();
+  if (file.type.startsWith('text/') || TEXT_EXTS.some((e) => lc.endsWith(e))) return 'text';
+  return null;
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+function readAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const result = String(r.result);
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    r.onerror = () => reject(new Error('No se pudo leer el archivo'));
+    r.readAsDataURL(file);
+  });
+}
+
+function readAsText(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result || ''));
+    r.onerror = () => reject(new Error('No se pudo leer el archivo'));
+    r.readAsText(file);
+  });
+}
+
+async function tryAddFile(file) {
+  if (!file) return;
+  if (pendingAttachments.length >= ATTACH_LIMIT_COUNT) {
+    setStatus('máx ' + ATTACH_LIMIT_COUNT + ' archivos por mensaje', 'error');
+    return;
+  }
+  const kind = classifyFile(file);
+  if (!kind) {
+    setStatus('tipo no soportado: ' + (file.name || file.type), 'error');
+    return;
+  }
+  if (kind === 'pdf' && providerSel.value === 'openai') {
+    setStatus('OpenAI no soporta PDFs aquí — cambia a Anthropic', 'error');
+    return;
+  }
+  if (file.size > ATTACH_LIMIT_BYTES) {
+    setStatus(file.name + ': supera ' + formatSize(ATTACH_LIMIT_BYTES), 'error');
+    return;
+  }
+  try {
+    const att = {
+      id: Math.random().toString(36).slice(2, 9),
+      name: file.name || ('archivo.' + (kind === 'pdf' ? 'pdf' : kind)),
+      mime: file.type || (kind === 'image' ? 'image/png' : kind === 'pdf' ? 'application/pdf' : 'text/plain'),
+      size: file.size,
+      kind,
+    };
+    if (kind === 'image') {
+      att.data = await readAsBase64(file);
+      att.dataUri = 'data:' + att.mime + ';base64,' + att.data;
+    } else if (kind === 'pdf') {
+      att.data = await readAsBase64(file);
+    } else {
+      att.text = await readAsText(file);
+    }
+    pendingAttachments.push(att);
+    renderAttachBar();
+    setStatus('agregado: ' + att.name);
+  } catch (e) {
+    setStatus('error leyendo archivo: ' + e.message, 'error');
+  }
+}
+
+function removeAttachment(id) {
+  const i = pendingAttachments.findIndex((a) => a.id === id);
+  if (i >= 0) {
+    pendingAttachments.splice(i, 1);
+    renderAttachBar();
+  }
+}
+
+function renderAttachBar() {
+  attachBarEl.innerHTML = '';
+  if (!pendingAttachments.length) {
+    attachBarEl.hidden = true;
+    return;
+  }
+  attachBarEl.hidden = false;
+  for (const a of pendingAttachments) {
+    const chip = document.createElement('div');
+    chip.className = 'attach-chip';
+
+    const thumb = document.createElement('div');
+    thumb.className = 'attach-chip-thumb';
+    if (a.kind === 'image') {
+      const img = document.createElement('img');
+      img.src = a.dataUri;
+      img.alt = '';
+      thumb.appendChild(img);
+    } else {
+      thumb.innerHTML = ATTACH_ICONS[a.kind] || ATTACH_ICONS.text;
+    }
+    chip.appendChild(thumb);
+
+    const info = document.createElement('div');
+    info.className = 'attach-chip-info';
+    const name = document.createElement('span');
+    name.className = 'attach-chip-name';
+    name.textContent = a.name;
+    info.appendChild(name);
+    const size = document.createElement('span');
+    size.className = 'attach-chip-size';
+    size.textContent = formatSize(a.size);
+    info.appendChild(size);
+    chip.appendChild(info);
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'attach-remove';
+    remove.setAttribute('aria-label', 'Quitar adjunto');
+    remove.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+    remove.addEventListener('click', () => removeAttachment(a.id));
+    chip.appendChild(remove);
+
+    attachBarEl.appendChild(chip);
+  }
+}
+
+function clearAttachments() {
+  pendingAttachments.length = 0;
+  renderAttachBar();
+}
+
+function buildContentParts(prompt, attachments, provider) {
+  if (!attachments.length) return prompt;
+  const parts = [];
+  if (provider === 'openai') {
+    if (prompt) parts.push({ type: 'text', text: prompt });
+    for (const a of attachments) {
+      if (a.kind === 'image') {
+        parts.push({ type: 'image_url', image_url: { url: a.dataUri || ('data:' + a.mime + ';base64,' + a.data) } });
+      } else if (a.kind === 'text') {
+        parts.push({ type: 'text', text: '```' + a.name + '\n' + a.text + '\n```' });
+      }
+    }
+    return parts;
+  }
+  // Anthropic: media first, then text
+  for (const a of attachments) {
+    if (a.kind === 'image') {
+      parts.push({ type: 'image', source: { type: 'base64', media_type: a.mime, data: a.data } });
+    } else if (a.kind === 'pdf') {
+      parts.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: a.data } });
+    } else if (a.kind === 'text') {
+      parts.push({ type: 'text', text: '```' + a.name + '\n' + a.text + '\n```' });
+    }
+  }
+  if (prompt) parts.push({ type: 'text', text: prompt });
+  return parts;
+}
+
 /* ─── Chats store ─── */
 const Chats = {
   indexKey: 'outpost_chat_index',
@@ -144,7 +327,15 @@ function getCurrentChat() {
 
 function persistCurrentChat(chat) {
   chat.updatedAt = new Date().toISOString();
-  Chats.save(chat);
+  try {
+    Chats.save(chat);
+  } catch (e) {
+    if (e && (e.name === 'QuotaExceededError' || /quota/i.test(e.message))) {
+      setStatus('localStorage lleno — borra chats viejos para guardar', 'error');
+      return;
+    }
+    throw e;
+  }
   const idx = Chats.index();
   const meta = idx.find((c) => c.id === chat.id);
   if (meta) {
@@ -158,8 +349,20 @@ function persistCurrentChat(chat) {
   renderChatList();
 }
 
-function deriveTitle(prompt) {
-  const trimmed = String(prompt || '').trim().replace(/\s+/g, ' ');
+function deriveTitle(content) {
+  let text = '';
+  if (typeof content === 'string') {
+    text = content;
+  } else if (Array.isArray(content)) {
+    const firstText = content.find((p) => p.type === 'text' && p.text);
+    if (firstText) text = firstText.text;
+    else {
+      const hasImage = content.some((p) => p.type === 'image' || p.type === 'image_url');
+      const hasDoc   = content.some((p) => p.type === 'document');
+      text = hasImage ? 'Imagen adjunta' : hasDoc ? 'PDF adjunto' : 'Adjuntos';
+    }
+  }
+  const trimmed = String(text).trim().replace(/\s+/g, ' ');
   if (!trimmed) return 'Nueva conversación';
   return trimmed.length > 42 ? trimmed.slice(0, 42) + '…' : trimmed;
 }
@@ -331,13 +534,48 @@ function messageNode(role, content) {
   body.className = 'msg-body';
   if (role === 'assistant') {
     body.classList.add('md');
-    body.innerHTML = renderMarkdown(content);
+    body.innerHTML = renderMarkdown(typeof content === 'string' ? content : '');
+  } else if (role === 'user' && Array.isArray(content)) {
+    body.classList.add('user-content');
+    renderUserParts(body, content);
   } else {
-    body.textContent = content;
+    body.textContent = typeof content === 'string' ? content : JSON.stringify(content);
   }
   wrap.appendChild(avatar);
   wrap.appendChild(body);
   return wrap;
+}
+
+function renderUserParts(body, parts) {
+  for (const p of parts) {
+    if (p.type === 'text') {
+      const div = document.createElement('div');
+      div.className = 'user-text';
+      div.textContent = p.text || '';
+      body.appendChild(div);
+    } else if (p.type === 'image_url' && p.image_url) {
+      const img = document.createElement('img');
+      img.className = 'user-image';
+      img.loading = 'lazy';
+      img.src = p.image_url.url;
+      img.alt = '';
+      img.addEventListener('click', () => window.open(p.image_url.url, '_blank'));
+      body.appendChild(img);
+    } else if (p.type === 'image' && p.source) {
+      const img = document.createElement('img');
+      img.className = 'user-image';
+      img.loading = 'lazy';
+      img.src = 'data:' + p.source.media_type + ';base64,' + p.source.data;
+      img.alt = '';
+      img.addEventListener('click', () => window.open(img.src, '_blank'));
+      body.appendChild(img);
+    } else if (p.type === 'document' && p.source) {
+      const chip = document.createElement('div');
+      chip.className = 'user-doc-chip';
+      chip.innerHTML = ATTACH_ICONS.pdf + '<span class="user-doc-chip-name">PDF adjunto</span>';
+      body.appendChild(chip);
+    }
+  }
 }
 
 function updateProviderMark() {
@@ -424,11 +662,11 @@ function statusFooter() {
 }
 
 /* ─── Send ─── */
-function buildRequest(history, prompt) {
+function buildRequest(history, userMessage) {
   const provider = providerSel.value;
   const model = modelSel.value;
   const maxTokens = Number(maxTokensInput.value) || 2048;
-  const messages = [...history, { role: 'user', content: prompt }];
+  const messages = [...history, userMessage];
   if (provider === 'openai') {
     return {
       url: 'https://api.openai.com/v1/chat/completions',
@@ -450,9 +688,16 @@ async function send(prompt) {
     openDrawer();
     return;
   }
+  const provider = providerSel.value;
+  const attachments = pendingAttachments.slice();
+  if (!prompt && !attachments.length) return;
+
+  const userContent = buildContentParts(prompt, attachments, provider);
+  const userMessage = { role: 'user', content: userContent };
   const history = getHistory();
-  const newHistory = [...history, { role: 'user', content: prompt }];
+  const newHistory = [...history, userMessage];
   setHistory(newHistory);
+  clearAttachments();
   renderHistory();
 
   const typing = typingNode();
@@ -463,7 +708,7 @@ async function send(prompt) {
   setStatus('pensando...');
   const t0 = Date.now();
   try {
-    const req = buildRequest(history, prompt);
+    const req = buildRequest(history, userMessage);
     const r = await fetch('/api/proxy', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
@@ -573,6 +818,7 @@ function switchToChat(id) {
     return;
   }
   Chats.setCurrentId(id);
+  clearAttachments();
   renderChatList();
   renderHistory();
   closeSidebar();
@@ -606,7 +852,7 @@ function autoresize() {
 formEl.addEventListener('submit', (e) => {
   e.preventDefault();
   const prompt = inputEl.value.trim();
-  if (!prompt) return;
+  if (!prompt && !pendingAttachments.length) return;
   inputEl.value = '';
   autoresize();
   send(prompt);
@@ -618,6 +864,45 @@ inputEl.addEventListener('keydown', (e) => {
     e.preventDefault();
     formEl.requestSubmit();
   }
+});
+
+attachBtnEl.addEventListener('click', () => fileInputEl.click());
+fileInputEl.addEventListener('change', async (e) => {
+  for (const file of e.target.files) await tryAddFile(file);
+  fileInputEl.value = '';
+});
+
+inputEl.addEventListener('paste', async (e) => {
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  for (const item of items) {
+    if (item.kind === 'file') {
+      const f = item.getAsFile();
+      if (f) {
+        e.preventDefault();
+        await tryAddFile(f);
+      }
+    }
+  }
+});
+
+let dragDepth = 0;
+formEl.addEventListener('dragenter', (e) => {
+  e.preventDefault();
+  dragDepth++;
+  formEl.classList.add('drag-over');
+});
+formEl.addEventListener('dragleave', (e) => {
+  e.preventDefault();
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) formEl.classList.remove('drag-over');
+});
+formEl.addEventListener('dragover', (e) => e.preventDefault());
+formEl.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  formEl.classList.remove('drag-over');
+  const files = (e.dataTransfer && e.dataTransfer.files) || [];
+  for (const file of files) await tryAddFile(file);
 });
 
 $('clear').addEventListener('click', () => {
@@ -638,6 +923,7 @@ $('clear').addEventListener('click', () => {
 
 $('newChatBtn').addEventListener('click', () => {
   newChat();
+  clearAttachments();
   renderChatList();
   renderHistory();
   closeSidebar();
