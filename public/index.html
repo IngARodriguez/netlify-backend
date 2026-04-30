@@ -78,6 +78,44 @@
     }
     .maint-status.ok    { color: #14532d; }
     .maint-status.error { color: #7f1d1d; }
+    pre.snippet {
+      background: #1c1c1e;
+      color: #f5f5f0;
+      padding: .85rem 1rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+      font-size: .82rem;
+      line-height: 1.55;
+      margin: .5rem 0;
+      position: relative;
+    }
+    pre.snippet .copy-btn {
+      position: absolute;
+      top: .5rem;
+      right: .5rem;
+      background: rgba(255,255,255,.08);
+      color: #ddd;
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 5px;
+      padding: .15rem .5rem;
+      font-size: .7rem;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    pre.snippet .copy-btn:hover { background: rgba(255,255,255,.14); color: #fff; }
+    pre.snippet .copy-btn.copied { background: #15803d; color: #fff; border-color: #15803d; }
+    .gateway-base {
+      background: #fffbe6;
+      border: 1px solid #fde68a;
+      padding: .55rem .8rem;
+      border-radius: 6px;
+      font-size: .85rem;
+      margin: .75rem 0 1rem;
+      color: #713f12;
+    }
+    .gateway-base code { background: transparent; padding: 0; }
+    h3 { margin-top: 1.5rem; margin-bottom: .35rem; font-size: 1rem; }
   </style>
 </head>
 <body>
@@ -94,7 +132,62 @@
       <h3>Tunnel chat</h3>
       <p>Llamadas HTTP a OpenAI o Anthropic a través del worker.</p>
     </a>
+    <a class="card" href="#api-gateway">
+      <h3>API gateway</h3>
+      <p>Reemplaza <code>api.openai.com</code> / <code>api.anthropic.com</code> por este sitio.</p>
+    </a>
   </div>
+
+  <h2 id="api-gateway">API gateway</h2>
+  <p>Apunta cualquier SDK o curl que use OpenAI / Anthropic a este sitio: el worker pone la API key real, tú solo pasas el token de OpenChaw como auth.</p>
+  <div class="gateway-base">Base URL: <code id="gatewayBase"></code></div>
+
+  <h3>Anthropic — curl</h3>
+  <pre class="snippet" data-copy><button type="button" class="copy-btn">copy</button>curl <span class="g-base">BASE</span>/v1/messages \
+  -H "x-api-key: admin" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1024,
+    "messages": [{"role":"user","content":"Hola Claude"}]
+  }'</pre>
+
+  <h3>OpenAI — curl</h3>
+  <pre class="snippet" data-copy><button type="button" class="copy-btn">copy</button>curl <span class="g-base">BASE</span>/v1/chat/completions \
+  -H "Authorization: Bearer admin" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role":"user","content":"Hola"}]
+  }'</pre>
+
+  <h3>Anthropic — Python SDK</h3>
+  <pre class="snippet" data-copy><button type="button" class="copy-btn">copy</button>from anthropic import Anthropic
+
+client = Anthropic(
+    api_key="admin",
+    base_url="<span class="g-base">BASE</span>",
+)
+msg = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hola"}],
+)
+print(msg.content[0].text)</pre>
+
+  <h3>OpenAI — Python SDK</h3>
+  <pre class="snippet" data-copy><button type="button" class="copy-btn">copy</button>from openai import OpenAI
+
+client = OpenAI(
+    api_key="admin",
+    base_url="<span class="g-base">BASE</span>/v1",
+)
+r = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hola"}],
+)
+print(r.choices[0].message.content)</pre>
 
   <h2>Endpoints API</h2>
   <table>
@@ -108,6 +201,8 @@
       <tr><td><span class="method post">POST</span></td><td><code>/api/proxy</code></td><td>Bearer <code>JOBS_CLIENT_TOKEN</code></td><td>Proxy HTTP saliente vía worker</td></tr>
       <tr><td><span class="method del">DEL</span></td><td><code>/api/jobs/archive</code></td><td>Bearer <code>JOBS_CLIENT_TOKEN</code></td><td>Vacía todo el store de archivo</td></tr>
       <tr><td><span class="method del">DEL</span></td><td><code>/api/jobs/active</code></td><td>Bearer <code>JOBS_CLIENT_TOKEN</code></td><td>Vacía todo el store activo</td></tr>
+      <tr><td>—</td><td><code>/v1/*</code></td><td><code>x-api-key</code> o Bearer</td><td>Gateway transparente a Anthropic / OpenAI</td></tr>
+      <tr><td>—</td><td><code>/anthropic/*</code> · <code>/openai/*</code></td><td><code>x-api-key</code> o Bearer</td><td>Gateway con prefijo explícito</td></tr>
     </tbody>
   </table>
 
@@ -119,6 +214,32 @@
   </div>
 
   <script>
+    (function fillBase() {
+      const base = location.origin;
+      document.getElementById('gatewayBase').textContent = base;
+      document.querySelectorAll('.g-base').forEach((el) => { el.textContent = base; });
+    })();
+
+    document.querySelectorAll('pre.snippet[data-copy]').forEach((pre) => {
+      const btn = pre.querySelector('.copy-btn');
+      btn.addEventListener('click', async () => {
+        const clone = pre.cloneNode(true);
+        clone.querySelector('.copy-btn').remove();
+        const text = clone.textContent.trim();
+        try {
+          await navigator.clipboard.writeText(text);
+          btn.textContent = 'copied';
+          btn.classList.add('copied');
+          setTimeout(() => {
+            btn.textContent = 'copy';
+            btn.classList.remove('copied');
+          }, 1400);
+        } catch {
+          btn.textContent = 'fail';
+        }
+      });
+    });
+
     document.getElementById('cleanBtn').addEventListener('click', async () => {
       const btn = document.getElementById('cleanBtn');
       const out = document.getElementById('cleanStatus');
