@@ -185,7 +185,6 @@
       flex: 1;
       line-height: 1.65;
       font-size: 1rem;
-      white-space: pre-wrap;
       word-wrap: break-word;
       padding-top: 4px;
     }
@@ -195,6 +194,7 @@
     }
     .msg-user .msg-body {
       font-family: var(--ui);
+      white-space: pre-wrap;
     }
     .msg-error .msg-body {
       color: var(--danger);
@@ -204,6 +204,79 @@
       border: 1px solid rgba(193, 74, 59, 0.2);
       padding: .6rem .8rem;
       border-radius: 8px;
+      white-space: pre-wrap;
+    }
+
+    /* ───── Markdown ───── */
+    .md > *:first-child { margin-top: 0; }
+    .md > *:last-child  { margin-bottom: 0; }
+    .md p {
+      margin: 0 0 .75em;
+    }
+    .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+      font-family: var(--ui);
+      font-weight: 600;
+      line-height: 1.3;
+      margin: 1.1em 0 .45em;
+      letter-spacing: -.005em;
+      color: var(--text);
+    }
+    .md h1 { font-size: 1.4em; }
+    .md h2 { font-size: 1.22em; }
+    .md h3 { font-size: 1.08em; }
+    .md h4 { font-size: 1em; }
+    .md h5, .md h6 { font-size: .95em; color: var(--text-mute); }
+    .md strong { font-weight: 600; }
+    .md em { font-style: italic; }
+    .md ul, .md ol {
+      padding-left: 1.5em;
+      margin: .55em 0;
+    }
+    .md li { margin: .2em 0; }
+    .md li > p { margin: .15em 0; }
+    .md a {
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .md a:hover { color: #b15839; }
+    .md blockquote {
+      margin: .6em 0;
+      padding: .15em 1em;
+      border-left: 3px solid var(--border-strong);
+      color: var(--text-mute);
+    }
+    .md code.md-inline {
+      background: rgba(28, 25, 23, 0.06);
+      padding: .12em .35em;
+      border-radius: 4px;
+      font-family: var(--mono);
+      font-size: .88em;
+      border: 1px solid rgba(28, 25, 23, 0.04);
+    }
+    .md pre.md-code {
+      background: #1f1c19;
+      color: #f1efe8;
+      border-radius: 10px;
+      padding: .85em 1em;
+      overflow-x: auto;
+      margin: .8em 0;
+      line-height: 1.5;
+    }
+    .md pre.md-code code {
+      font-family: var(--mono);
+      font-size: .85em;
+      background: transparent;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      color: inherit;
+      white-space: pre;
+    }
+    .md hr {
+      border: 0;
+      border-top: 1px solid var(--border);
+      margin: 1.2em 0;
     }
     .typing-dots {
       display: inline-flex;
@@ -547,6 +620,93 @@
     const setHistory = (h) =>
       localStorage.setItem('tunnel_hist_' + providerSel.value, JSON.stringify(h));
 
+    /* ─── Markdown ─── */
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    function renderMarkdown(text) {
+      if (!text) return '';
+      const codeBlocks = [];
+      const inlineCodes = [];
+
+      let s = String(text).replace(/```([a-zA-Z0-9_+\-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+        codeBlocks.push({ lang, code });
+        return ' CB' + (codeBlocks.length - 1) + ' ';
+      });
+
+      s = s.replace(/`([^`\n]+)`/g, (_, code) => {
+        inlineCodes.push(code);
+        return ' IC' + (inlineCodes.length - 1) + ' ';
+      });
+
+      s = escapeHtml(s);
+
+      s = s.replace(/^(#{1,6})\s+(.+?)\s*#*\s*$/gm, (_, h, content) => {
+        const lvl = h.length;
+        return '<h' + lvl + '>' + content + '</h' + lvl + '>';
+      });
+
+      s = s.replace(/^---+$|^\*\*\*+$/gm, '<hr>');
+
+      s = s.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/__([^_\n]+?)__/g, '<strong>$1</strong>');
+      s = s.replace(/(^|[\s(])\*([^*\n]+?)\*(?=[\s.,;:!?)]|$)/g, '$1<em>$2</em>');
+      s = s.replace(/(^|[\s(])_([^_\n]+?)_(?=[\s.,;:!?)]|$)/g, '$1<em>$2</em>');
+
+      s = s.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (m, txt, url) => {
+        if (!/^(https?:\/\/|mailto:|\/)/i.test(url)) return m;
+        return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>';
+      });
+
+      const lines = s.split('\n');
+      const out = [];
+      let listType = null;
+      const closeList = () => {
+        if (listType) out.push('</' + listType + '>');
+        listType = null;
+      };
+      for (const line of lines) {
+        const ul = line.match(/^\s*[-*+]\s+(.+)$/);
+        const ol = line.match(/^\s*\d+\.\s+(.+)$/);
+        if (ul) {
+          if (listType !== 'ul') { closeList(); out.push('<ul>'); listType = 'ul'; }
+          out.push('<li>' + ul[1] + '</li>');
+        } else if (ol) {
+          if (listType !== 'ol') { closeList(); out.push('<ol>'); listType = 'ol'; }
+          out.push('<li>' + ol[1] + '</li>');
+        } else {
+          closeList();
+          out.push(line);
+        }
+      }
+      closeList();
+      s = out.join('\n');
+
+      s = s.replace(/^&gt;\s+(.+)$/gm, '<blockquote>$1</blockquote>');
+
+      s = s.split(/\n{2,}/).map((block) => {
+        block = block.trim();
+        if (!block) return '';
+        if (/^<(h[1-6]|ul|ol|pre|blockquote|hr)/i.test(block)) return block;
+        if (/^ CB\d+ $/.test(block)) return block;
+        return '<p>' + block.replace(/\n/g, '<br>') + '</p>';
+      }).filter(Boolean).join('\n');
+
+      s = s.replace(/ IC(\d+) /g, (_, idx) =>
+        '<code class="md-inline">' + escapeHtml(inlineCodes[Number(idx)]) + '</code>');
+
+      s = s.replace(/ CB(\d+) /g, (_, idx) => {
+        const { lang, code } = codeBlocks[Number(idx)];
+        const langAttr = lang ? ' data-lang="' + escapeHtml(lang) + '"' : '';
+        return '<pre class="md-code"' + langAttr + '><code>' + escapeHtml(code) + '</code></pre>';
+      });
+
+      return s;
+    }
+
     /* ─── Render ─── */
     function renderHistory() {
       const history = getHistory();
@@ -589,7 +749,12 @@
       }
       const body = document.createElement('div');
       body.className = 'msg-body';
-      body.textContent = content;
+      if (role === 'assistant') {
+        body.classList.add('md');
+        body.innerHTML = renderMarkdown(content);
+      } else {
+        body.textContent = content;
+      }
       wrap.appendChild(avatar);
       wrap.appendChild(body);
       return wrap;
