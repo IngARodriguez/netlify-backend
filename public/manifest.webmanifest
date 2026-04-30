@@ -1,7 +1,7 @@
 {
-  "name": "Outpost Chat",
-  "short_name": "Outpost",
-  "description": "Outpost — chat con modelos de OpenAI y Anthropic vía tunnel",
+  "name": "OpenChaw",
+  "short_name": "OpenChaw",
+  "description": "OpenChaw — chat con modelos de OpenAI y Anthropic vía tunnel",
   "start_url": "/tunnel/",
   "scope": "/",
   "display": "standalone",

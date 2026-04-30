@@ -1,9 +1,9 @@
 import { setStatus } from './status.js';
 
 export const Chats = {
-  indexKey: 'outpost_chat_index',
-  currentKey: 'outpost_current_chat',
-  key: (id) => 'outpost_chat_' + id,
+  indexKey: 'openchaw_chat_index',
+  currentKey: 'openchaw_current_chat',
+  key: (id) => 'openchaw_chat_' + id,
   index: () => JSON.parse(localStorage.getItem(Chats.indexKey) || '[]'),
   saveIndex: (idx) => localStorage.setItem(Chats.indexKey, JSON.stringify(idx)),
   get: (id) => {
@@ -22,7 +22,7 @@ export const Chats = {
   },
 };
 
-const CHATS_CHANGED_EVENT = 'outpost:chats-changed';
+const CHATS_CHANGED_EVENT = 'openchaw:chats-changed';
 function emitChatsChanged() {
   document.dispatchEvent(new CustomEvent(CHATS_CHANGED_EVENT));
 }
@@ -115,8 +115,29 @@ export function setHistory(messages) {
   persistCurrentChat(chat);
 }
 
+function migrateOutpostKeys() {
+  const oldKeys = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith('outpost_')) oldKeys.push(k);
+  }
+  let moved = false;
+  for (const oldKey of oldKeys) {
+    const newKey = oldKey.replace(/^outpost_/, 'openchaw_');
+    if (localStorage.getItem(newKey) == null) {
+      const val = localStorage.getItem(oldKey);
+      if (val != null) {
+        localStorage.setItem(newKey, val);
+        moved = true;
+      }
+    }
+    localStorage.removeItem(oldKey);
+  }
+  return moved;
+}
+
 export function migrateLegacyHistory() {
-  let migrated = false;
+  let migrated = migrateOutpostKeys();
   for (const provider of ['openai', 'anthropic']) {
     const old = localStorage.getItem('tunnel_hist_' + provider);
     if (!old) continue;

@@ -75,7 +75,7 @@ const getCachedModels = (p) =>
 const setCachedModels = (p, ids) =>
   localStorage.setItem('tunnel_models_' + p, JSON.stringify(ids));
 
-const MODELS_CHANGED_EVENT = 'outpost:models-changed';
+const MODELS_CHANGED_EVENT = 'openchaw:models-changed';
 function emitModelsChanged() {
   document.dispatchEvent(new CustomEvent(MODELS_CHANGED_EVENT));
 }

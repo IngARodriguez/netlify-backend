@@ -70,7 +70,7 @@ function buildGreetingPrompt() {
   const mood = GREETING_MOODS[Math.floor(Math.random() * GREETING_MOODS.length)];
   const seed = Math.random().toString(36).slice(2, 10);
   return [
-    'Eres el saludo de bienvenida de un chat llamado "Outpost".',
+    'Eres el saludo de bienvenida de un chat llamado "OpenChaw".',
     'Devuelve UNA sola frase corta (máx 12 palabras), en español.',
     'Estilo de esta vez: ' + mood + '.',
     'Que sorprenda, que NO suene genérica, que rompa la expectativa de un asistente.',
