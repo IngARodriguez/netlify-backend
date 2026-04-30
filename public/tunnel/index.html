@@ -73,9 +73,16 @@
         <span>JOBS_CLIENT_TOKEN</span>
         <input id="token" type="password" autocomplete="off" placeholder="admin" />
       </label>
-      <label>
-        <span>max tokens</span>
-        <input id="maxTokens" type="number" value="2048" min="1" />
+      <label class="slider-field">
+        <div class="slider-header">
+          <span>max tokens</span>
+          <span class="slider-value" id="maxTokensValue">2048</span>
+        </div>
+        <input id="maxTokens" type="range" min="256" max="8192" step="256" value="2048" />
+        <div class="slider-meta">
+          <span>256</span>
+          <span id="maxTokensMax">8192</span>
+        </div>
       </label>
       <button type="button" id="refreshModels" class="ghost-btn">Refrescar lista de modelos</button>
       <button type="button" id="clear" class="ghost-btn danger">Borrar conversación actual</button>

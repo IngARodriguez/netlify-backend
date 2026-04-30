@@ -579,7 +579,7 @@ body {
   color: var(--text-mute);
   font-weight: 500;
 }
-.drawer-body input {
+.drawer-body input:not([type="range"]) {
   background: var(--surface);
   border: 1px solid var(--border-strong);
   color: var(--text);
@@ -590,7 +590,72 @@ body {
   outline: 0;
   transition: border-color .15s;
 }
-.drawer-body input:focus { border-color: var(--accent); }
+.drawer-body input:not([type="range"]):focus { border-color: var(--accent); }
+
+/* ───── Slider field ───── */
+.slider-field { gap: .5rem; }
+.slider-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.slider-value {
+  font-family: var(--mono);
+  font-size: .85rem;
+  color: var(--text);
+  font-weight: 500;
+  letter-spacing: -.01em;
+}
+.slider-meta {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: .68rem;
+  color: var(--text-faint);
+}
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  margin: .15rem 0;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--range-pct, 25%),
+    rgba(0, 0, 0, 0.08) var(--range-pct, 25%),
+    rgba(0, 0, 0, 0.08) 100%
+  );
+  border-radius: 999px;
+  outline: 0;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  transition: transform .12s, box-shadow .12s;
+}
+input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.08); }
+input[type="range"]::-webkit-slider-thumb:active { transform: scale(.95); }
+input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+}
+input[type="range"]::-moz-range-track {
+  background: transparent;
+}
 .ghost-btn {
   background: var(--surface);
   border: 1px solid var(--border-strong);
