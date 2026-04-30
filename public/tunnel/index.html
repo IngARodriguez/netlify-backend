@@ -2,7 +2,14 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#c96442" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Outpost" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <title>Outpost Chat</title>
   <link rel="stylesheet" href="style.css" />
   <script type="module" src="js/app.js"></script>
@@ -51,15 +58,19 @@
       <div class="attach-bar" id="attachBar" hidden></div>
       <form id="form" class="composer">
         <input id="fileInput" type="file" multiple accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,.txt,.md,.json,.csv,.js,.ts,.tsx,.jsx,.py,.css,.html,.xml,.yml,.yaml,.sh,.log,.toml,.go,.rb,.rs,.java,.c,.cpp,.h,.sql" hidden />
-        <button type="button" id="attachBtn" class="attach-btn" aria-label="Adjuntar archivo" title="Adjuntar archivo">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-        </button>
         <textarea id="input" rows="1" placeholder="Mensaje a Outpost..."></textarea>
-        <button type="submit" id="send" class="send-btn" aria-label="Enviar">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
-        </button>
+        <div class="composer-actions">
+          <button type="button" id="attachBtn" class="composer-action attach-btn" aria-label="Adjuntar archivo" title="Adjuntar archivo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          </button>
+          <span class="composer-spacer"></span>
+          <button type="submit" id="send" class="send-btn" aria-label="Enviar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+          </button>
+        </div>
       </form>
-      <div class="composer-footer">
+      <div class="composer-footer status-idle" id="statusFooter">
+        <span class="status-dot" aria-hidden="true"></span>
         <span id="status"></span>
       </div>
     </div>

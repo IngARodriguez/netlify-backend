@@ -1,0 +1,20 @@
+{
+  "name": "Outpost Chat",
+  "short_name": "Outpost",
+  "description": "Outpost — chat con modelos de OpenAI y Anthropic vía tunnel",
+  "start_url": "/tunnel/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#c96442",
+  "background_color": "#f4f3ee",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
