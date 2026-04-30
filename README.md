@@ -351,8 +351,6 @@ git clone https://github.com/IngARodriguez/netlify-backend.git
 cd netlify-backend
 
 export JOBS_BASE_URL=https://tu-sitio.netlify.app
-export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=sk-...
 # JOBS_WORKER_TOKEN no es necesario si dejaste el default "admin"
 
 node worker/worker.js
