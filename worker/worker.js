@@ -4,17 +4,12 @@ import { promisify } from "node:util";
 const execAsync = promisify(exec);
 
 const BASE = process.env.JOBS_BASE_URL || "https://enviromentfree.netlify.app";
-const TOKEN = process.env.JOBS_WORKER_TOKEN;
+const TOKEN = process.env.JOBS_WORKER_TOKEN || "admin";
 const POLL_MS = Number(process.env.POLL_MS || 1000);
 const CMD_TIMEOUT_MS = Number(process.env.CMD_TIMEOUT_MS || 30_000);
 const MAX_BUFFER = 1024 * 1024;
 const HTTP_BODY_CAP = 1_000_000;
 const VERBOSE = process.env.VERBOSE === "1" || process.env.VERBOSE === "true";
-
-if (!TOKEN) {
-  console.error("Falta la variable de entorno JOBS_WORKER_TOKEN");
-  process.exit(1);
-}
 
 const headers = {
   Authorization: `Bearer ${TOKEN}`,
