@@ -218,11 +218,23 @@ export default async (req) => {
       ? (() => { try { return JSON.parse(resp.body); } catch { return null; } })()
       : resp.body;
     if (obj) {
-      const sse = buildFakeStream(target.provider, obj);
+      const events = buildFakeStream(target.provider, obj);
       responseHeaders["Content-Type"] = "text/event-stream; charset=utf-8";
       responseHeaders["Cache-Control"] = "no-cache, no-transform";
       responseHeaders["X-Accel-Buffering"] = "no";
-      return new Response(sse, { status: resp.status, headers: responseHeaders });
+      const enc = new TextEncoder();
+      let i = 0;
+      const stream = new ReadableStream({
+        async pull(controller) {
+          if (i < events.length) {
+            controller.enqueue(enc.encode(events[i++]));
+            await new Promise((r) => setTimeout(r, 8));
+          } else {
+            controller.close();
+          }
+        },
+      });
+      return new Response(stream, { status: resp.status, headers: responseHeaders });
     }
   }
 
@@ -245,18 +257,27 @@ function sseEvent(name, data) {
   return out;
 }
 
+const TEXT_CHUNK = 40;
+
+function chunkText(text) {
+  const out = [];
+  if (!text) return [""];
+  for (let i = 0; i < text.length; i += TEXT_CHUNK) {
+    out.push(text.slice(i, i + TEXT_CHUNK));
+  }
+  return out;
+}
+
 function buildFakeStream(provider, full) {
   if (provider === "anthropic") return buildAnthropicStream(full);
   return buildOpenAIStream(full);
 }
 
 function buildAnthropicStream(msg) {
-  // Reconstruye los eventos SSE estándar de Anthropic /v1/messages a partir
-  // del response completo de /v1/messages (no streaming).
   const blocks = Array.isArray(msg.content) ? msg.content : [];
-  let out = "";
+  const events = [];
 
-  out += sseEvent("message_start", {
+  events.push(sseEvent("message_start", {
     type: "message_start",
     message: {
       id: msg.id,
@@ -268,62 +289,60 @@ function buildAnthropicStream(msg) {
       stop_sequence: null,
       usage: msg.usage || { input_tokens: 0, output_tokens: 0 },
     },
-  });
+  }));
 
   blocks.forEach((block, idx) => {
     if (block.type === "text") {
-      out += sseEvent("content_block_start", {
+      events.push(sseEvent("content_block_start", {
         type: "content_block_start",
         index: idx,
         content_block: { type: "text", text: "" },
-      });
-      out += sseEvent("content_block_delta", {
-        type: "content_block_delta",
-        index: idx,
-        delta: { type: "text_delta", text: block.text || "" },
-      });
-      out += sseEvent("content_block_stop", {
+      }));
+      for (const piece of chunkText(block.text || "")) {
+        events.push(sseEvent("content_block_delta", {
+          type: "content_block_delta",
+          index: idx,
+          delta: { type: "text_delta", text: piece },
+        }));
+      }
+      events.push(sseEvent("content_block_stop", {
         type: "content_block_stop",
         index: idx,
-      });
+      }));
     } else {
-      // tool_use, thinking, etc — emitirlo como bloque entero start+stop
-      out += sseEvent("content_block_start", {
+      events.push(sseEvent("content_block_start", {
         type: "content_block_start",
         index: idx,
         content_block: block,
-      });
-      out += sseEvent("content_block_stop", {
+      }));
+      events.push(sseEvent("content_block_stop", {
         type: "content_block_stop",
         index: idx,
-      });
+      }));
     }
   });
 
-  out += sseEvent("message_delta", {
+  events.push(sseEvent("message_delta", {
     type: "message_delta",
     delta: {
       stop_reason: msg.stop_reason || "end_turn",
       stop_sequence: msg.stop_sequence ?? null,
     },
-    usage: msg.usage || { output_tokens: 0 },
-  });
+    usage: { output_tokens: msg.usage?.output_tokens ?? 0 },
+  }));
 
-  out += sseEvent("message_stop", { type: "message_stop" });
+  events.push(sseEvent("message_stop", { type: "message_stop" }));
 
-  return out;
+  return events;
 }
 
 function buildOpenAIStream(resp) {
-  // Reconstruye SSE estándar de OpenAI /v1/chat/completions a partir
-  // del response no-streaming.
   const id = resp.id || "chatcmpl-" + Math.random().toString(36).slice(2, 12);
   const created = resp.created || Math.floor(Date.now() / 1000);
   const model = resp.model || "";
   const choices = Array.isArray(resp.choices) ? resp.choices : [];
-  let out = "";
+  const events = [];
 
-  // Primer chunk con role
   if (choices.length) {
     const initial = choices.map((c, i) => ({
       index: c.index ?? i,
@@ -331,37 +350,42 @@ function buildOpenAIStream(resp) {
       logprobs: null,
       finish_reason: null,
     }));
-    out += "data: " + JSON.stringify({
+    events.push("data: " + JSON.stringify({
       id, object: "chat.completion.chunk", created, model,
       choices: initial,
-    }) + "\n\n";
+    }) + "\n\n");
   }
 
-  // Chunk con todo el contenido en delta.content
-  const contentChunk = choices.map((c, i) => ({
-    index: c.index ?? i,
-    delta: { content: (c.message && c.message.content) || "" },
-    logprobs: null,
-    finish_reason: null,
-  }));
-  out += "data: " + JSON.stringify({
-    id, object: "chat.completion.chunk", created, model,
-    choices: contentChunk,
-  }) + "\n\n";
+  // Chunks de content reales — uno por cada trozo de texto
+  for (let ci = 0; ci < choices.length; ci++) {
+    const c = choices[ci];
+    const content = (c.message && c.message.content) || "";
+    const pieces = chunkText(content);
+    for (const piece of pieces) {
+      events.push("data: " + JSON.stringify({
+        id, object: "chat.completion.chunk", created, model,
+        choices: [{
+          index: c.index ?? ci,
+          delta: { content: piece },
+          logprobs: null,
+          finish_reason: null,
+        }],
+      }) + "\n\n");
+    }
+  }
 
-  // Chunk final con finish_reason
   const finalChunk = choices.map((c, i) => ({
     index: c.index ?? i,
     delta: {},
     logprobs: null,
     finish_reason: c.finish_reason || "stop",
   }));
-  out += "data: " + JSON.stringify({
+  events.push("data: " + JSON.stringify({
     id, object: "chat.completion.chunk", created, model,
     choices: finalChunk,
     usage: resp.usage,
-  }) + "\n\n";
+  }) + "\n\n");
 
-  out += "data: [DONE]\n\n";
-  return out;
+  events.push("data: [DONE]\n\n");
+  return events;
 }
