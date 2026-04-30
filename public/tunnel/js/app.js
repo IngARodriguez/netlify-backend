@@ -20,6 +20,7 @@ import {
 } from './attachments.js';
 import { send } from './send.js';
 import { newChat } from './chats.js';
+import './model-picker.js';
 
 /* ─── Composer events ─── */
 formEl.addEventListener('submit', (e) => {

@@ -46,7 +46,14 @@
           <option value="openai">OpenAI</option>
           <option value="anthropic">Anthropic</option>
         </select>
-        <select id="model" class="select-min" aria-label="Model"></select>
+        <div class="model-picker" id="modelPicker">
+          <button type="button" class="model-picker-btn" id="modelPickerBtn" aria-haspopup="listbox" aria-expanded="false" aria-label="Modelo">
+            <span class="model-picker-label" id="modelPickerLabel">—</span>
+            <svg class="model-picker-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="model-picker-menu" id="modelPickerMenu" role="listbox" hidden></div>
+        </div>
+        <select id="model" hidden aria-label="Model"></select>
       </div>
     </header>
 

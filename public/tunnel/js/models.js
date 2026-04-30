@@ -75,6 +75,14 @@ const getCachedModels = (p) =>
 const setCachedModels = (p, ids) =>
   localStorage.setItem('tunnel_models_' + p, JSON.stringify(ids));
 
+const MODELS_CHANGED_EVENT = 'outpost:models-changed';
+function emitModelsChanged() {
+  document.dispatchEvent(new CustomEvent(MODELS_CHANGED_EVENT));
+}
+export function onModelsChanged(handler) {
+  document.addEventListener(MODELS_CHANGED_EVENT, handler);
+}
+
 export function populateModelSelect() {
   const provider = providerSel.value;
   const cached = getCachedModels(provider);
@@ -89,6 +97,7 @@ export function populateModelSelect() {
     if (id === current) opt.selected = true;
     modelSel.appendChild(opt);
   }
+  emitModelsChanged();
 }
 
 export async function fetchModels() {
