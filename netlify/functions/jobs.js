@@ -97,22 +97,30 @@ export default async (req) => {
   }
 
   // GET /api/jobs/next  → worker reclama el siguiente pendiente (sólo mira ACTIVE)
+  // Soporta long polling con ?wait=N (segundos, max 24).
   if (req.method === "GET" && parts.length === 3 && parts[2] === "next") {
     if (!bearer(req, workerToken)) return json({ error: "Unauthorized" }, 401);
     const active = getStore({ name: ACTIVE, consistency: "strong" });
-    const list = await active.list();
-    let oldest = null;
-    for (const blob of list.blobs) {
-      const j = await active.get(blob.key, { type: "json" });
-      if (j && j.status === "pending" && (!oldest || j.createdAt < oldest.createdAt)) {
-        oldest = j;
+    const url = new URL(req.url);
+    const waitSec = Math.max(0, Math.min(Number(url.searchParams.get("wait")) || 0, 24));
+    const deadline = Date.now() + waitSec * 1000;
+    const INTERVAL_MS = 1500;
+
+    while (true) {
+      const list = await active.list();
+      const keys = list.blobs.map((b) => b.key).sort();
+      for (const key of keys) {
+        const j = await active.get(key, { type: "json" });
+        if (j && j.status === "pending") {
+          j.status = "running";
+          j.startedAt = new Date().toISOString();
+          await active.setJSON(j.id, j);
+          return json({ ok: true, job: j });
+        }
       }
+      if (Date.now() >= deadline) return json({ ok: true, job: null });
+      await new Promise((r) => setTimeout(r, INTERVAL_MS));
     }
-    if (!oldest) return json({ ok: true, job: null });
-    oldest.status = "running";
-    oldest.startedAt = new Date().toISOString();
-    await active.setJSON(oldest.id, oldest);
-    return json({ ok: true, job: oldest });
   }
 
   // POST /api/jobs/:id/result  → worker entrega resultado (mueve ACTIVE → ARCHIVE)

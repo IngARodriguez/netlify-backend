@@ -5,7 +5,8 @@ const execAsync = promisify(exec);
 
 const BASE = process.env.JOBS_BASE_URL || "https://enviromentfree.netlify.app";
 const TOKEN = process.env.JOBS_WORKER_TOKEN || "admin";
-const POLL_MS = Number(process.env.POLL_MS || 1000);
+const LONG_POLL_SEC = Math.max(1, Math.min(Number(process.env.LONG_POLL_SEC || 24), 24));
+const ERROR_BACKOFF_MS = Number(process.env.ERROR_BACKOFF_MS || 5000);
 const CMD_TIMEOUT_MS = Number(process.env.CMD_TIMEOUT_MS || 30_000);
 const MAX_BUFFER = 1024 * 1024;
 const HTTP_BODY_CAP = 1_000_000;
@@ -21,7 +22,7 @@ const vlog = (...a) => { if (VERBOSE) console.log(`[${ts()}]`, ...a); };
 
 async function claimNext() {
   const t0 = Date.now();
-  const r = await fetch(`${BASE}/api/jobs/next`, { headers });
+  const r = await fetch(`${BASE}/api/jobs/next?wait=${LONG_POLL_SEC}`, { headers });
   const latency = Date.now() - t0;
   if (!r.ok) throw new Error(`GET /api/jobs/next → ${r.status} (${latency}ms)`);
   const data = await r.json();
@@ -155,7 +156,7 @@ function describeJob(job) {
 
 async function loop() {
   console.log(
-    `[${ts()}] Worker activo. Polling ${BASE} cada ${POLL_MS}ms ` +
+    `[${ts()}] Worker activo. Long-polling ${BASE} con wait=${LONG_POLL_SEC}s ` +
     `(VERBOSE=${VERBOSE ? "on" : "off"})`
   );
   let pollCount = 0;
@@ -164,10 +165,9 @@ async function loop() {
     try {
       const job = await claimNext();
       if (!job) {
-        if (!VERBOSE && pollCount % 30 === 0) {
+        if (!VERBOSE && pollCount % 10 === 0) {
           console.log(`[${ts()}] heartbeat ${pollCount} polls, sin trabajos`);
         }
-        await sleep(POLL_MS);
         continue;
       }
       const claimedAt = Date.now();
@@ -184,7 +184,7 @@ async function loop() {
       );
     } catch (err) {
       console.error(`[${ts()}] loop error:`, err.message);
-      await sleep(POLL_MS);
+      await sleep(ERROR_BACKOFF_MS);
     }
   }
 }
