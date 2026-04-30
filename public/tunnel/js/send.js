@@ -4,7 +4,7 @@ import {
 } from './dom.js';
 import { setStatus } from './status.js';
 import { openDrawer } from './ui.js';
-import { getHistory, setHistory } from './chats.js';
+import { getHistory, setHistory, getCurrentChat } from './chats.js';
 import { renderHistory, typingNode, appendInline } from './render.js';
 import {
   pendingAttachments, clearAttachments, buildContentParts,
@@ -14,17 +14,24 @@ function buildRequest(history, userMessage) {
   const provider = providerSel.value;
   const model = modelSel.value;
   const maxTokens = Number(maxTokensInput.value) || 2048;
-  const messages = [...history, userMessage];
+  const systemPrompt = (getCurrentChat().systemPrompt || '').trim();
+
   if (provider === 'openai') {
+    const messages = systemPrompt
+      ? [{ role: 'system', content: systemPrompt }, ...history, userMessage]
+      : [...history, userMessage];
     return {
       url: 'https://api.openai.com/v1/chat/completions',
       body: { model, messages },
       extract: (r) => r.body.choices[0].message.content,
     };
   }
+  const messages = [...history, userMessage];
+  const body = { model, max_tokens: maxTokens, messages };
+  if (systemPrompt) body.system = systemPrompt;
   return {
     url: 'https://api.anthropic.com/v1/messages',
-    body: { model, max_tokens: maxTokens, messages },
+    body,
     extract: (r) => r.body.content[0].text,
   };
 }

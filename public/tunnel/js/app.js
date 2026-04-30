@@ -21,6 +21,7 @@ import {
 import { send } from './send.js';
 import { newChat } from './chats.js';
 import './model-picker.js';
+import './system-prompt.js';
 
 /* ─── Composer events ─── */
 formEl.addEventListener('submit', (e) => {
