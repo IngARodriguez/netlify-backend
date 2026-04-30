@@ -32,11 +32,17 @@ export function emptyStateNode() {
   wrap.className = 'empty';
   const provider = providerSel.value;
   const greeting = pickFallbackGreeting();
+  const meta = `${provider} · ${modelSel.value || 'modelo por defecto'}`;
   wrap.innerHTML = `
     <div class="logo-circle">${brandSVG(provider)}</div>
     <h2 class="greeting-text">${escapeHtml(greeting)}</h2>
-    <p>${escapeHtml(provider)} · ${escapeHtml(modelSel.value || 'modelo por defecto')}</p>
+    <p class="empty-meta">
+      <span class="online-dot" aria-hidden="true"></span><span class="meta-text"></span><span class="meta-caret" aria-hidden="true">▎</span>
+    </p>
   `;
+  const metaText = wrap.querySelector('.meta-text');
+  typewriter(metaText, meta);
+
   if (greetingAbort) greetingAbort.abort();
   greetingAbort = typeof AbortController !== 'undefined' ? new AbortController() : null;
   fetchDynamicGreeting(greetingAbort).then((fresh) => {
@@ -49,6 +55,22 @@ export function emptyStateNode() {
     }
   });
   return wrap;
+}
+
+function typewriter(el, text, speed = 32) {
+  el.textContent = '';
+  let i = 0;
+  const tick = () => {
+    if (!el.isConnected) return;
+    if (i < text.length) {
+      el.textContent += text.charAt(i++);
+      setTimeout(tick, speed);
+    } else {
+      const caret = el.parentElement && el.parentElement.querySelector('.meta-caret');
+      if (caret) caret.classList.add('idle');
+    }
+  };
+  tick();
 }
 
 export function messageNode(role, content) {
