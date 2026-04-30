@@ -162,6 +162,25 @@
       font-family: var(--serif);
       font-weight: 700;
     }
+    .msg-assistant .avatar svg {
+      width: 19px;
+      height: 19px;
+      display: block;
+    }
+    .empty .logo-circle svg {
+      width: 34px;
+      height: 34px;
+      display: block;
+    }
+    .provider-mark {
+      display: inline-grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      color: var(--accent);
+      flex: 0 0 auto;
+    }
+    .provider-mark svg { width: 20px; height: 20px; display: block; }
     .msg-body {
       flex: 1;
       line-height: 1.65;
@@ -438,6 +457,7 @@
 <body>
   <header class="topbar">
     <div class="brand">
+      <span class="provider-mark" id="providerMark"></span>
       <span>Outpost Chat</span>
     </div>
     <div class="header-controls">
@@ -515,6 +535,12 @@
       anthropic: 'https://api.anthropic.com/v1/models',
     };
 
+    const BRAND_ICONS = {
+      anthropic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20 12 4 19 20"/><line x1="8.6" y1="13.5" x2="15.4" y2="13.5"/></svg>',
+      openai: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="2.5"/><circle cx="12" cy="5" r="2"/><circle cx="17.5" cy="8" r="2"/><circle cx="17.5" cy="16" r="2"/><circle cx="12" cy="19" r="2"/><circle cx="6.5" cy="16" r="2"/><circle cx="6.5" cy="8" r="2"/></svg>',
+    };
+    const brandSVG = (provider) => BRAND_ICONS[provider] || BRAND_ICONS.openai;
+
     /* ─── History store (per-provider, in localStorage) ─── */
     const getHistory = () =>
       JSON.parse(localStorage.getItem('tunnel_hist_' + providerSel.value) || '[]');
@@ -542,7 +568,7 @@
       wrap.className = 'empty';
       const provider = providerSel.value;
       wrap.innerHTML = `
-        <div class="logo-circle">${provider === 'anthropic' ? 'C' : 'AI'}</div>
+        <div class="logo-circle">${brandSVG(provider)}</div>
         <h2>¿En qué te ayudo hoy?</h2>
         <p>Conversación con ${provider} · ${modelSel.value || 'modelo por defecto'}</p>
       `;
@@ -554,7 +580,13 @@
       wrap.className = 'msg msg-' + role;
       const avatar = document.createElement('div');
       avatar.className = 'avatar';
-      avatar.textContent = role === 'user' ? 'You' : 'C';
+      if (role === 'user') {
+        avatar.textContent = 'You';
+      } else if (role === 'assistant') {
+        avatar.innerHTML = brandSVG(providerSel.value);
+      } else {
+        avatar.textContent = '!';
+      }
       const body = document.createElement('div');
       body.className = 'msg-body';
       body.textContent = content;
@@ -563,12 +595,16 @@
       return wrap;
     }
 
+    function updateProviderMark() {
+      $('providerMark').innerHTML = brandSVG(providerSel.value);
+    }
+
     function typingNode() {
       const wrap = document.createElement('div');
       wrap.className = 'msg msg-assistant msg-typing';
       const avatar = document.createElement('div');
       avatar.className = 'avatar';
-      avatar.textContent = 'C';
+      avatar.innerHTML = brandSVG(providerSel.value);
       const body = document.createElement('div');
       body.className = 'msg-body typing-dots';
       body.innerHTML = '<span></span><span></span><span></span>';
@@ -781,6 +817,7 @@
     providerSel.addEventListener('change', () => {
       localStorage.setItem('tunnel_provider', providerSel.value);
       populateModelSelect();
+      updateProviderMark();
       renderHistory();
       statusFooter();
     });
@@ -798,6 +835,7 @@
       providerSel.value    = localStorage.getItem('tunnel_provider') || 'openai';
       maxTokensInput.value = localStorage.getItem('tunnel_max_tokens') || '2048';
       populateModelSelect();
+      updateProviderMark();
       renderHistory();
       statusFooter();
       autoresize();
