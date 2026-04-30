@@ -9,6 +9,7 @@ import { renderHistory, typingNode, appendInline } from './render.js';
 import {
   pendingAttachments, clearAttachments, buildContentParts,
 } from './attachments.js';
+import { requiresResponsesAPI } from './models.js';
 
 function buildRequest(history, userMessage) {
   const provider = providerSel.value;
@@ -17,6 +18,16 @@ function buildRequest(history, userMessage) {
   const systemPrompt = (getCurrentChat().systemPrompt || '').trim();
 
   if (provider === 'openai') {
+    if (requiresResponsesAPI(model)) {
+      const input = [...history, userMessage].map(toResponsesInput);
+      const body = { model, input, max_output_tokens: maxTokens };
+      if (systemPrompt) body.instructions = systemPrompt;
+      return {
+        url: 'https://api.openai.com/v1/responses',
+        body,
+        extract: extractResponsesText,
+      };
+    }
     const messages = systemPrompt
       ? [{ role: 'system', content: systemPrompt }, ...history, userMessage]
       : [...history, userMessage];
@@ -34,6 +45,42 @@ function buildRequest(history, userMessage) {
     body,
     extract: (r) => r.body.content[0].text,
   };
+}
+
+function toResponsesInput(msg) {
+  if (typeof msg.content === 'string') {
+    return { role: msg.role, content: msg.content };
+  }
+  if (!Array.isArray(msg.content)) {
+    return { role: msg.role, content: String(msg.content ?? '') };
+  }
+  const parts = msg.content.map((p) => {
+    if (p.type === 'text') {
+      return {
+        type: msg.role === 'assistant' ? 'output_text' : 'input_text',
+        text: p.text || '',
+      };
+    }
+    if (p.type === 'image_url' && p.image_url) {
+      return { type: 'input_image', image_url: p.image_url.url };
+    }
+    return p;
+  });
+  return { role: msg.role, content: parts };
+}
+
+function extractResponsesText(r) {
+  const b = r.body || {};
+  if (typeof b.output_text === 'string' && b.output_text.length) return b.output_text;
+  const out = Array.isArray(b.output) ? b.output : [];
+  for (const item of out) {
+    if (item && item.type === 'message' && Array.isArray(item.content)) {
+      for (const c of item.content) {
+        if (c && c.type === 'output_text' && typeof c.text === 'string') return c.text;
+      }
+    }
+  }
+  return '';
 }
 
 export async function send(prompt) {

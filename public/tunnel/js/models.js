@@ -31,6 +31,13 @@ const MIN_OUTPUT_TOKENS = 256;
 
 export const MAX_TOKENS_STORAGE_KEY = (model) => 'tunnel_max_tokens_' + model;
 
+// OpenAI models that only work in /v1/responses (not /v1/chat/completions)
+export function requiresResponsesAPI(modelId) {
+  if (!modelId) return false;
+  const id = modelId.toLowerCase();
+  return /-pro(\b|-)/.test(id) || /-deep-research(\b|-)/.test(id);
+}
+
 export function maxTokensForModel(modelId) {
   if (!modelId) return 4096;
   if (MAX_TOKENS_OVERRIDES[modelId]) return MAX_TOKENS_OVERRIDES[modelId];
