@@ -76,9 +76,9 @@ Functions ni Edge Functions). El timeout máximo es ~26 s.
 Proceso Node 20+ que el usuario arranca en su máquina:
 
 ```bash
+git clone https://github.com/IngARodriguez/netlify-backend
 export JOBS_BASE_URL=https://tu-sitio.netlify.app
-export ANTHROPIC_API_KEY=sk-ant-...      # opcional
-export OPENAI_API_KEY=sk-...              # opcional
+cd netlify-backend
 node worker/worker.js
 ```
 
