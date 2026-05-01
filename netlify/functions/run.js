@@ -1,40 +1,59 @@
-import { corsHeaders, preflight } from "./_lib/cors.js";
-import { bearer, clientToken } from "./_lib/auth.js";
-import { json } from "./_lib/http.js";
-import { getActive, getArchive } from "./_lib/stores.js";
-import { newJobId, pollJobUntilArchived } from "./_lib/queue.js";
+import { getStore } from "@netlify/blobs";
 
 export const config = { path: "/api/run" };
 
-const cors = corsHeaders("POST, OPTIONS");
+const ACTIVE = "jobs-active";
+const ARCHIVE = "jobs-archive";
+
+const cors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...cors },
+  });
+
+const bearer = (req, expected) => {
+  const h = req.headers.get("authorization") || "";
+  const m = h.match(/^Bearer\s+(.+)$/i);
+  return !!expected && !!m && m[1] === expected;
+};
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const MAX_WAIT_MS = 25_000;
 const POLL_INTERVAL_MS = 250;
 
 export default async (req) => {
-  const pre = preflight(req, cors);
-  if (pre) return pre;
+  if (req.method === "OPTIONS") {
+    return new Response("", { status: 204, headers: cors });
+  }
   if (req.method !== "POST") {
-    return json({ error: "Method not allowed. Use POST." }, 405, cors);
+    return json({ error: "Method not allowed. Use POST." }, 405);
   }
 
-  if (!bearer(req, clientToken())) return json({ error: "Unauthorized" }, 401, cors);
+  const clientToken = process.env.JOBS_CLIENT_TOKEN || "admin";
+  if (!bearer(req, clientToken)) return json({ error: "Unauthorized" }, 401);
 
   let body;
-  try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400, cors); }
+  try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
   const command = typeof body.command === "string" ? body.command.trim() : "";
-  if (!command) return json({ error: "Falta 'command' (string)." }, 400, cors);
-  if (command.length > 4000) return json({ error: "command demasiado largo" }, 400, cors);
+  if (!command) return json({ error: "Falta 'command' (string)." }, 400);
+  if (command.length > 4000) return json({ error: "command demasiado largo" }, 400);
 
   const waitMs = Math.min(
     Math.max(Number(body.timeoutMs) || MAX_WAIT_MS, 500),
     MAX_WAIT_MS
   );
 
-  const active = getActive();
-  const archive = getArchive();
+  const active = getStore({ name: ACTIVE, consistency: "strong" });
+  const archive = getStore({ name: ARCHIVE, consistency: "strong" });
 
-  const id = newJobId();
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const initial = {
     id,
     command,
@@ -43,10 +62,19 @@ export default async (req) => {
   };
   await active.setJSON(id, initial);
 
-  const { done, latest } = await pollJobUntilArchived({
-    active, archive, id, waitMs, pollIntervalMs: POLL_INTERVAL_MS,
-  });
-  const job = done || latest || initial;
+  const deadline = Date.now() + waitMs;
+  let job = initial;
+  let done = null;
+  while (Date.now() < deadline) {
+    await sleep(POLL_INTERVAL_MS);
+    done = await archive.get(id, { type: "json" });
+    if (done) {
+      job = done;
+      break;
+    }
+    const live = await active.get(id, { type: "json" });
+    if (live) job = live;
+  }
 
   if (done) {
     return json({
@@ -58,13 +86,16 @@ export default async (req) => {
       exitCode: job.exitCode ?? null,
       durationMs: job.durationMs ?? null,
       error: job.error,
-    }, 200, cors);
+    });
   }
 
-  return json({
-    ok: true,
-    id: job.id,
-    status: job.status,
-    message: `Sin resultado en ${waitMs}ms. Consulta GET /api/jobs/${job.id} para recoger el resultado cuando termine.`,
-  }, 202, cors);
+  return json(
+    {
+      ok: true,
+      id: job.id,
+      status: job.status,
+      message: `Sin resultado en ${waitMs}ms. Consulta GET /api/jobs/${job.id} para recoger el resultado cuando termine.`,
+    },
+    202
+  );
 };
