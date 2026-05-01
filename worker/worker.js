@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 
-const BASE = process.env.JOBS_BASE_URL || "https://enviromentfree.netlify.app";
+const BASE = (process.env.JOBS_BASE_URL || "https://enviromentfree.netlify.app").replace(/\/+$/, "");
 const TOKEN = process.env.JOBS_WORKER_TOKEN || "admin";
 const LONG_POLL_SEC = Math.max(1, Math.min(Number(process.env.LONG_POLL_SEC || 24), 24));
 const ERROR_BACKOFF_MS = Number(process.env.ERROR_BACKOFF_MS || 5000);
