@@ -130,8 +130,145 @@ async function runShell(job) {
 }
 
 async function runJob(job) {
-  if (job.type === "http") return await runHttp(job);
+  if (job.type === "http") {
+    if (job.streaming) return await runHttpStream(job);
+    return await runHttp(job);
+  }
   return await runShell(job);
+}
+
+async function postChunks(jobId, batch) {
+  if (!batch.length) return;
+  try {
+    const r = await fetch(`${BASE}/api/jobs/${jobId}/chunks`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(batch),
+    });
+    if (!r.ok) vlog(`postChunks ${jobId} → ${r.status}`);
+  } catch (err) {
+    vlog(`postChunks ${jobId} fallo: ${err.message}`);
+  }
+}
+
+async function runHttpStream(job) {
+  const startedAt = Date.now();
+  const req = job.request || {};
+  const method = (req.method || "POST").toUpperCase();
+  let outHeaders = applyAutoAuth(req.url, req.headers || {});
+  let body = req.body;
+  if (body !== undefined && body !== null && typeof body !== "string") {
+    body = JSON.stringify(body);
+  }
+  if (!Object.keys(outHeaders).some((k) => k.toLowerCase() === "content-type")) {
+    outHeaders["Content-Type"] = "application/json";
+  }
+  const init = { method, headers: outHeaders, body };
+  try { init.signal = AbortSignal.timeout(HTTP_TIMEOUT_MS); } catch {}
+
+  let res;
+  try {
+    res = await fetch(req.url, init);
+  } catch (err) {
+    return {
+      response: null,
+      durationMs: Date.now() - startedAt,
+      error: err.name === "TimeoutError" ? "timeout" : (err.message || String(err)),
+    };
+  }
+
+  // Si el provider responde con error o sin stream, fallback a respuesta normal
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { parsed = text; }
+    await postChunks(job.id, [{ seq: 0, done: true }]);
+    return {
+      response: {
+        status: res.status,
+        headers: Object.fromEntries(res.headers.entries()),
+        body: parsed,
+      },
+      durationMs: Date.now() - startedAt,
+    };
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let seq = 0;
+  let pending = [];
+  let lastFlush = Date.now();
+  let accText = "";
+  let messageMeta = null;
+
+  const flushPending = async () => {
+    if (!pending.length) return;
+    const batch = pending.splice(0);
+    await postChunks(job.id, batch);
+    lastFlush = Date.now();
+  };
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      while (true) {
+        const idx = buffer.indexOf("\n\n");
+        if (idx < 0) break;
+        const ev = buffer.slice(0, idx + 2);
+        buffer = buffer.slice(idx + 2);
+        pending.push({ seq: seq++, raw: ev });
+
+        // Acumular texto para reconstruir respuesta no-stream en archive.
+        const dataLine = ev.split("\n").find((l) => l.startsWith("data: "));
+        if (dataLine && dataLine !== "data: [DONE]") {
+          try {
+            const obj = JSON.parse(dataLine.slice(6));
+            if (obj.type === "content_block_delta" && obj.delta?.text) {
+              accText += obj.delta.text;
+            } else if (obj.type === "message_start" && obj.message) {
+              messageMeta = obj.message;
+            } else if (obj.choices?.[0]?.delta?.content) {
+              accText += obj.choices[0].delta.content;
+            }
+          } catch {}
+        }
+      }
+
+      if (Date.now() - lastFlush > 150 || pending.length >= 4) {
+        await flushPending();
+      }
+    }
+  } catch (err) {
+    await flushPending();
+    await postChunks(job.id, [{ seq: seq++, done: true }]);
+    return {
+      response: null,
+      durationMs: Date.now() - startedAt,
+      error: err.name === "TimeoutError" ? "timeout" : (err.message || String(err)),
+    };
+  }
+
+  await flushPending();
+  await postChunks(job.id, [{ seq: seq++, done: true }]);
+
+  // Reconstruir respuesta completa para archive (clientes no-streaming).
+  const reconstructed = messageMeta
+    ? { ...messageMeta, content: [{ type: "text", text: accText }], stop_reason: "end_turn" }
+    : { content: [{ type: "text", text: accText }] };
+
+  return {
+    response: {
+      status: 200,
+      headers: Object.fromEntries(res.headers.entries()),
+      body: reconstructed,
+    },
+    durationMs: Date.now() - startedAt,
+    streamed: true,
+  };
 }
 
 async function postResult(id, result) {

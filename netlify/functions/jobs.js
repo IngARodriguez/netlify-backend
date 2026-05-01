@@ -6,6 +6,7 @@ export const config = {
 
 const ACTIVE = "jobs-active";
 const ARCHIVE = "jobs-archive";
+const CHUNKS = "jobs-chunks";
 const LEGACY = "jobs";
 
 const cors = {
@@ -93,6 +94,33 @@ export default async (req) => {
   // GET /api/jobs/next  → servido por la Edge Function en
   // netlify/edge-functions/jobs-next.js (mejor cap de runtime que las
   // Functions HTTP). Esta Function HTTP ya no maneja esa ruta.
+
+  // POST /api/jobs/:id/chunks  → worker entrega un batch de chunks SSE para
+  // streaming en tiempo real.  Cada chunk: { seq: number, raw?: string, done?: bool }.
+  if (req.method === "POST" && parts.length === 4 && parts[3] === "chunks") {
+    if (!bearer(req, workerToken)) return json({ error: "Unauthorized" }, 401);
+    const id = parts[2];
+    let body;
+    try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
+    if (!Array.isArray(body)) return json({ error: "Body must be array" }, 400);
+    const chunks = getStore({ name: CHUNKS, consistency: "strong" });
+    await Promise.all(body.map((c) =>
+      chunks.setJSON(`${id}/${String(c.seq).padStart(6, "0")}`, c)
+    ));
+    return json({ ok: true, count: body.length });
+  }
+
+  // DELETE /api/jobs/:id/chunks  → limpia los chunks de un job (post-stream).
+  if (req.method === "DELETE" && parts.length === 4 && parts[3] === "chunks") {
+    if (!bearer(req, clientToken) && !bearer(req, workerToken)) {
+      return json({ error: "Unauthorized" }, 401);
+    }
+    const id = parts[2];
+    const chunks = getStore({ name: CHUNKS, consistency: "strong" });
+    const { blobs } = await chunks.list({ prefix: `${id}/` });
+    await Promise.all(blobs.map((b) => chunks.delete(b.key)));
+    return json({ ok: true, deleted: blobs.length });
+  }
 
   // POST /api/jobs/:id/result  → worker entrega resultado (mueve ACTIVE → ARCHIVE)
   if (req.method === "POST" && parts.length === 4 && parts[3] === "result") {

@@ -6,6 +6,7 @@ export const config = {
 
 const ACTIVE = "jobs-active";
 const ARCHIVE = "jobs-archive";
+const CHUNKS = "jobs-chunks";
 
 // Edge Functions tienen cap de 30s wall time. Dejamos margen para emitir
 // el último chunk y cerrar limpiamente antes de que la plataforma corte.
@@ -131,16 +132,14 @@ export default async (req) => {
     }
   }
 
-  // "Fake streaming": si el cliente pide stream:true, lo apagamos para el worker
-  // y al final formateamos la respuesta completa como SSE.
-  let fakeStream = false;
+  // Streaming real: si el cliente pide stream:true, dejamos stream:true en el
+  // body al provider y marcamos el job para que el worker haga chunked write.
+  let realStream = false;
   let parsedBody = null;
   if (body) {
     try { parsedBody = JSON.parse(body); } catch {}
     if (parsedBody && parsedBody.stream === true) {
-      fakeStream = true;
-      parsedBody.stream = false;
-      body = JSON.stringify(parsedBody);
+      realStream = true;
     }
   }
 
@@ -165,22 +164,26 @@ export default async (req) => {
       body,
     },
     status: "pending",
+    streaming: realStream,
     createdAt: new Date().toISOString(),
   };
 
   const active = getStore({ name: ACTIVE, consistency: "strong" });
   const archive = getStore({ name: ARCHIVE, consistency: "strong" });
+  const chunks = getStore({ name: CHUNKS, consistency: "strong" });
 
   await active.setJSON(id, job);
 
-  return streamResult({ id, archive, target, fakeStream });
+  if (realStream) {
+    return streamRealChunks({ id, chunks, archive });
+  }
+  return streamResult({ id, archive });
 };
 
-function streamResult({ id, archive, target, fakeStream }) {
+function streamResult({ id, archive }) {
   const enc = new TextEncoder();
-  const startedAt = Date.now();
-  const deadline = startedAt + EDGE_TIMEOUT_MS;
-  const heartbeat = fakeStream ? ": keepalive\n\n" : " ";
+  const deadline = Date.now() + EDGE_TIMEOUT_MS;
+  const heartbeat = " ";
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -223,22 +226,6 @@ function streamResult({ id, archive, target, fakeStream }) {
               return;
             }
 
-            if (fakeStream && resp.status >= 200 && resp.status < 300) {
-              const obj = typeof resp.body === "string"
-                ? (() => { try { return JSON.parse(resp.body); } catch { return null; } })()
-                : resp.body;
-              if (obj) {
-                const events = buildFakeStream(target.provider, obj);
-                for (const ev of events) {
-                  tryEnqueue(ev);
-                  if (closed) return;
-                  await new Promise((r) => setTimeout(r, 8));
-                }
-                tryClose();
-                return;
-              }
-            }
-
             const respBody = typeof resp.body === "string"
               ? resp.body
               : JSON.stringify(resp.body);
@@ -253,8 +240,6 @@ function streamResult({ id, archive, target, fakeStream }) {
           }
         }
 
-        // Cap del Edge Function. El job sigue en marcha; el cliente puede
-        // recuperar el resultado más tarde con GET /api/jobs/:id.
         tryEnqueue(JSON.stringify({
           error: "edge_timeout",
           message: `Sin resultado en ${EDGE_TIMEOUT_MS}ms. El job ${id} sigue en marcha en el worker; consulta GET /api/jobs/${id} para recogerlo.`,
@@ -269,153 +254,100 @@ function streamResult({ id, archive, target, fakeStream }) {
     },
   });
 
-  const headers = {
-    ...cors,
-    "Content-Type": fakeStream
-      ? "text/event-stream; charset=utf-8"
-      : "application/json",
-    "Cache-Control": "no-cache, no-transform",
-    "X-Accel-Buffering": "no",
-  };
-
-  return new Response(stream, { status: 200, headers });
-}
-
-function sseEvent(name, data) {
-  let out = "";
-  if (name) out += "event: " + name + "\n";
-  out += "data: " + JSON.stringify(data) + "\n\n";
-  return out;
-}
-
-const TEXT_CHUNK = 40;
-
-function chunkText(text) {
-  const out = [];
-  if (!text) return [""];
-  for (let i = 0; i < text.length; i += TEXT_CHUNK) {
-    out.push(text.slice(i, i + TEXT_CHUNK));
-  }
-  return out;
-}
-
-function buildFakeStream(provider, full) {
-  if (provider === "anthropic") return buildAnthropicStream(full);
-  return buildOpenAIStream(full);
-}
-
-function buildAnthropicStream(msg) {
-  const blocks = Array.isArray(msg.content) ? msg.content : [];
-  const events = [];
-
-  events.push(sseEvent("message_start", {
-    type: "message_start",
-    message: {
-      id: msg.id,
-      type: msg.type || "message",
-      role: msg.role || "assistant",
-      model: msg.model,
-      content: [],
-      stop_reason: null,
-      stop_sequence: null,
-      usage: msg.usage || { input_tokens: 0, output_tokens: 0 },
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      ...cors,
+      "Content-Type": "application/json",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
     },
-  }));
+  });
+}
 
-  blocks.forEach((block, idx) => {
-    if (block.type === "text") {
-      events.push(sseEvent("content_block_start", {
-        type: "content_block_start",
-        index: idx,
-        content_block: { type: "text", text: "" },
-      }));
-      for (const piece of chunkText(block.text || "")) {
-        events.push(sseEvent("content_block_delta", {
-          type: "content_block_delta",
-          index: idx,
-          delta: { type: "text_delta", text: piece },
-        }));
+// Streaming real: el worker escribe chunks SSE al store CHUNKS conforme llegan
+// del provider; aquí los leemos en orden y los reenviamos al cliente.
+function streamRealChunks({ id, chunks, archive }) {
+  const enc = new TextEncoder();
+  const deadline = Date.now() + EDGE_TIMEOUT_MS;
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      let nextSeq = 0;
+      let closed = false;
+      let lastHeartbeat = Date.now();
+      let firstChunkSeen = false;
+
+      const tryEnqueue = (data) => {
+        if (closed) return;
+        try { controller.enqueue(enc.encode(data)); }
+        catch { closed = true; }
+      };
+      const tryClose = () => {
+        if (closed) return;
+        closed = true;
+        try { controller.close(); } catch {}
+      };
+
+      const cleanup = () => {
+        chunks.list({ prefix: `${id}/` }).then(({ blobs }) => {
+          for (const b of blobs) chunks.delete(b.key).catch(() => {});
+        }).catch(() => {});
+        archive.get(id, { type: "json" })
+          .then((j) => { if (j) archive.delete(id).catch(() => {}); })
+          .catch(() => {});
+      };
+
+      try {
+        while (Date.now() < deadline) {
+          const key = `${id}/${String(nextSeq).padStart(6, "0")}`;
+          const chunk = await chunks.get(key, { type: "json" });
+
+          if (chunk) {
+            firstChunkSeen = true;
+            chunks.delete(key).catch(() => {});
+
+            if (chunk.done) {
+              tryClose();
+              cleanup();
+              return;
+            }
+            if (chunk.raw) tryEnqueue(chunk.raw);
+            nextSeq++;
+            lastHeartbeat = Date.now();
+            continue;
+          }
+
+          // Sin chunk nuevo: heartbeat SSE para mantener viva la conexión.
+          if (Date.now() - lastHeartbeat >= HEARTBEAT_MS) {
+            tryEnqueue(": keepalive\n\n");
+            lastHeartbeat = Date.now();
+          }
+          await new Promise((r) => setTimeout(r, 100));
+        }
+
+        // Cap del Edge Function alcanzado.
+        const note = firstChunkSeen
+          ? `:edge_timeout id=${id} (job sigue corriendo, recupera con GET /api/jobs/${id})\n\n`
+          : `:edge_timeout id=${id} (worker no devolvió primer chunk, recupera con GET /api/jobs/${id})\n\n`;
+        tryEnqueue(note);
+        tryClose();
+      } catch (err) {
+        if (!closed) {
+          try { controller.error(err); closed = true; } catch {}
+        }
       }
-      events.push(sseEvent("content_block_stop", {
-        type: "content_block_stop",
-        index: idx,
-      }));
-    } else {
-      events.push(sseEvent("content_block_start", {
-        type: "content_block_start",
-        index: idx,
-        content_block: block,
-      }));
-      events.push(sseEvent("content_block_stop", {
-        type: "content_block_stop",
-        index: idx,
-      }));
-    }
+    },
   });
 
-  events.push(sseEvent("message_delta", {
-    type: "message_delta",
-    delta: {
-      stop_reason: msg.stop_reason || "end_turn",
-      stop_sequence: msg.stop_sequence ?? null,
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      ...cors,
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
     },
-    usage: { output_tokens: msg.usage?.output_tokens ?? 0 },
-  }));
-
-  events.push(sseEvent("message_stop", { type: "message_stop" }));
-
-  return events;
+  });
 }
 
-function buildOpenAIStream(resp) {
-  const id = resp.id || "chatcmpl-" + Math.random().toString(36).slice(2, 12);
-  const created = resp.created || Math.floor(Date.now() / 1000);
-  const model = resp.model || "";
-  const choices = Array.isArray(resp.choices) ? resp.choices : [];
-  const events = [];
-
-  if (choices.length) {
-    const initial = choices.map((c, i) => ({
-      index: c.index ?? i,
-      delta: { role: "assistant", content: "" },
-      logprobs: null,
-      finish_reason: null,
-    }));
-    events.push("data: " + JSON.stringify({
-      id, object: "chat.completion.chunk", created, model,
-      choices: initial,
-    }) + "\n\n");
-  }
-
-  for (let ci = 0; ci < choices.length; ci++) {
-    const c = choices[ci];
-    const content = (c.message && c.message.content) || "";
-    const pieces = chunkText(content);
-    for (const piece of pieces) {
-      events.push("data: " + JSON.stringify({
-        id, object: "chat.completion.chunk", created, model,
-        choices: [{
-          index: c.index ?? ci,
-          delta: { content: piece },
-          logprobs: null,
-          finish_reason: null,
-        }],
-      }) + "\n\n");
-    }
-  }
-
-  const finalChunk = choices.map((c, i) => ({
-    index: c.index ?? i,
-    delta: {},
-    logprobs: null,
-    finish_reason: c.finish_reason || "stop",
-  }));
-  events.push("data: " + JSON.stringify({
-    id, object: "chat.completion.chunk", created, model,
-    choices: finalChunk,
-    usage: resp.usage,
-  }) + "\n\n");
-
-  events.push("data: [DONE]\n\n");
-  return events;
-}
