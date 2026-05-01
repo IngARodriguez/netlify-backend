@@ -14,7 +14,11 @@ export function corsHeaders(methods = "POST, OPTIONS") {
 
 // Devuelve la Response de preflight si el método es OPTIONS, null si no.
 // Cada caller decide qué hacer si recibe null (seguir con el routing).
+//
+// El body debe ser `null` (no `""`) para que la spec Web acepte status
+// 204 — undici reciente del runtime de Netlify Functions rechaza el body
+// string con TypeError "Invalid response status code 204".
 export function preflight(req, cors) {
   if (req.method !== "OPTIONS") return null;
-  return new Response("", { status: 204, headers: cors });
+  return new Response(null, { status: 204, headers: cors });
 }
