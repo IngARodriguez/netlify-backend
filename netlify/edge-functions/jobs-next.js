@@ -35,7 +35,7 @@ const readEnv = (key) => {
 
 export default async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response("", { status: 204, headers: cors });
+    return new Response(null, { status: 204, headers: cors });
   }
   if (req.method !== "GET") {
     return json({ error: "Method not allowed. Use GET." }, 405);

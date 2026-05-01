@@ -98,7 +98,7 @@ const STRIP_HEADERS = new Set([
 
 export default async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response("", { status: 204, headers: cors });
+    return new Response(null, { status: 204, headers: cors });
   }
 
   const url = new URL(req.url);
