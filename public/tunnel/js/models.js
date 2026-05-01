@@ -86,8 +86,18 @@ export function updateMaxTokensSlider() {
 
 const getCachedModels = (p) =>
   JSON.parse(localStorage.getItem('tunnel_models_' + p) || 'null');
-const setCachedModels = (p, ids) =>
+const setCachedModels = (p, ids) => {
   localStorage.setItem('tunnel_models_' + p, JSON.stringify(ids));
+  localStorage.setItem('tunnel_models_age_' + p, String(Date.now()));
+};
+
+// Edad del cache en ms.  Si nunca se cacheó, devuelve Infinity (= stale).
+export function getCacheAgeMs(provider) {
+  const t = Number(localStorage.getItem('tunnel_models_age_' + provider));
+  return t ? Date.now() - t : Infinity;
+}
+
+export const CACHE_TTL_MS = 60 * 60 * 1000; // 1h: refresco automático en init
 
 const MODELS_CHANGED_EVENT = 'openchaw:models-changed';
 function emitModelsChanged() {
@@ -114,12 +124,28 @@ export function populateModelSelect() {
   emitModelsChanged();
 }
 
-export async function fetchModels() {
+// fetchModels(opts):
+//   opts.silent = true → refresco en background (al cambiar provider o al
+//                        cargar la página): falla silenciosa, no toca el
+//                        status footer ni abre el drawer si no hay token.
+//                        Útil porque el cache local sigue funcionando.
+//   opts.silent = false (default) → refresco manual desde Settings: muestra
+//                        progreso en el footer y abre drawer si falta token.
+export async function fetchModels(opts = {}) {
+  const silent = !!opts.silent;
   const token = tokenInput.value.trim();
-  if (!token) { setStatus('falta el token en settings', 'error'); openDrawer(); return; }
+  if (!token) {
+    if (!silent) {
+      setStatus('falta el token en settings', 'error');
+      openDrawer();
+    }
+    return;
+  }
   const provider = providerSel.value;
-  refreshBtn.disabled = true;
-  setStatus('cargando modelos...');
+  if (!silent) {
+    refreshBtn.disabled = true;
+    setStatus('cargando modelos...');
+  }
   try {
     const r = await fetch('/api/proxy', {
       method: 'POST',
@@ -128,21 +154,21 @@ export async function fetchModels() {
     });
     const data = await r.json();
     if (!r.ok || !data.response) {
-      setStatus('error: ' + (data.error || 'HTTP ' + r.status), 'error');
+      if (!silent) setStatus('error: ' + (data.error || 'HTTP ' + r.status), 'error');
       return;
     }
     const items = data.response.body && data.response.body.data;
     if (!Array.isArray(items)) {
-      setStatus('respuesta inesperada', 'error');
+      if (!silent) setStatus('respuesta inesperada', 'error');
       return;
     }
     const ids = items.map((m) => m.id).filter(Boolean).sort();
     setCachedModels(provider, ids);
     populateModelSelect();
-    setStatus(ids.length + ' modelos disponibles');
+    if (!silent) setStatus(ids.length + ' modelos disponibles');
   } catch (e) {
-    setStatus('fallo: ' + e.message, 'error');
+    if (!silent) setStatus('fallo: ' + e.message, 'error');
   } finally {
-    refreshBtn.disabled = false;
+    if (!silent) refreshBtn.disabled = false;
   }
 }
