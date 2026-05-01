@@ -50,6 +50,15 @@ function applyAutoAuth(url, h) {
     if (!has("anthropic-version")) {
       out["anthropic-version"] = "2023-06-01";
     }
+    // El gateway del navegador puede colar un Origin; si llega, Anthropic
+    // exige este flag o devuelve "CORS requests must set ...".
+    if (!has("anthropic-dangerous-direct-browser-access")) {
+      out["anthropic-dangerous-direct-browser-access"] = "true";
+    }
+    // Limpieza defensiva por si el Origin se coló pese al strip del gateway.
+    for (const k of Object.keys(out)) {
+      if (k.toLowerCase() === "origin" || k.toLowerCase() === "referer") delete out[k];
+    }
   }
   return out;
 }

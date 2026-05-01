@@ -94,6 +94,12 @@ const STRIP_HEADERS = new Set([
   "cdn-loop", "cf-connecting-ip", "cf-ipcountry", "cf-ray", "cf-visitor",
   "x-nf-account-id", "x-nf-deploy-context", "x-nf-deploy-id",
   "x-nf-site-id", "x-nf-geo",
+  // Browser-only headers — pasarlos al provider hace que Anthropic
+  // dispare "CORS requests must set anthropic-dangerous-direct-browser-access"
+  // y que OpenAI a veces falle por origin checks.
+  "origin", "referer", "cookie",
+  "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user",
+  "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
 ]);
 
 export default async (req) => {
