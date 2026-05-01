@@ -1,19 +1,21 @@
 # OpenChaw
 
 Backend serverless en Netlify + un worker en una máquina propia (típicamente
-una instancia de Theia, pero sirve cualquier Linux con `node`) que actúa como
-puente entre el navegador y las APIs de OpenAI / Anthropic, **sin exponer las
-claves de los modelos al cliente**.
+una instancia de Theia, pero sirve cualquier Linux con `node`) que actúa
+como puente entre el navegador y las APIs de OpenAI / Anthropic, **sin
+exponer las claves de los modelos al cliente**.
 
 OpenChaw ofrece tres caras del mismo sistema:
 
 1. **Un chat web** estilo claude.ai (`/tunnel/`) con sidebar de
-   conversaciones, adjuntos, markdown, slider de tokens y modo PWA.
+   conversaciones, adjuntos, markdown, slider de tokens, modo PWA y
+   **streaming token-a-token en tiempo real**.
 2. **Una terminal web** (`/run/`) para ejecutar comandos shell en la máquina
    donde corre el worker.
-3. **Un API gateway transparente** (`/v1/*`, `/anthropic/*`, `/openai/*`) que
-   expone los endpoints de OpenAI y Anthropic con la URL de Netlify, listo
-   para consumirlo desde curl, Python, OpenCode, Cline, Cursor, etc.
+3. **Un API gateway transparente** (`/v1/*`, `/anthropic/*`, `/openai/*`)
+   con **streaming SSE real** que expone los endpoints de OpenAI y Anthropic
+   con la URL de Netlify, listo para curl, Python, OpenCode, Cline, Cursor,
+   SDKs oficiales, etc.
 
 Las claves de OpenAI / Anthropic viven solo en el worker (variables de
 entorno locales). El cliente solo necesita un token administrativo
@@ -21,33 +23,66 @@ entorno locales). El cliente solo necesita un token administrativo
 
 ---
 
+## Características clave
+
+- ✅ **Streaming real token-a-token** end-to-end, sin fake-stream. TTFT
+  típico ~2 s para Sonnet/Opus.
+- ✅ **El chat siempre entrega la respuesta** aunque tarde minutos —
+  polling cliente con 10 min de margen.
+- ✅ **Worker concurrente** — pool de N slots paralelos con claim atómico
+  (CAS sobre etag) para evitar doble entrega.
+- ✅ **API gateway compatible con SDKs** oficiales de Anthropic y OpenAI,
+  además de OpenCode / Cline / Cursor / curl crudo.
+- ✅ **Edge Functions** para los caminos calientes (long-poll, gateway
+  streaming): 1M req/mes y sin cap de runtime separado en plan free.
+- ✅ **Persistencia local** de chats con migración automática de claves
+  antiguas. PWA instalable. Mobile-first. Adjuntos (imágenes / PDF /
+  texto). System prompt por chat.
+- ✅ **Tolerancia a fallos**: jobs huérfanos quedan recuperables por id en
+  archive si la conexión cae a mitad de respuesta.
+
+---
+
 ## Arquitectura
 
 ```
-   ┌──────────────┐         HTTPS         ┌────────────────────────────┐
-   │  Cliente     │ ─────────────────────►│  Netlify Functions          │
-   │  (browser,   │                       │  /v1/*, /api/proxy,         │
-   │   curl, SDK) │ ◄─────────────────────│  /api/run, /api/jobs/...    │
-   └──────────────┘                       └─────────────┬───────────────┘
-                                                        │ encola job en
-                                                        │ Netlify Blobs
-                                                        ▼
-                                                  ┌─────────────┐
-                                                  │ jobs-active │
-                                                  └─────┬───────┘
-                                                        │
-                          ┌─────────────────────────────┘
-                          │ long polling (`?wait=24`)
+                                   ┌──────────────────────────────────┐
+                                   │     Netlify Functions (HTTP)     │
+                                   │   /api/proxy   /api/run          │
+                                   │   /api/jobs    /api/jobs/:id     │
+                                   │   /api/jobs/:id/result           │
+                                   │   /api/jobs/:id/chunks           │
+                                   └──────────────┬───────────────────┘
+                                                  │
+   ┌─────────────┐                                │
+   │  Cliente    │ ────────► Edge Functions ◄────┤
+   │ (browser,   │           /v1/*, /anthropic/*,│
+   │  curl, SDK) │           /openai/*           │
+   │             │           /api/jobs/next      │
+   │             │ ◄──── streaming SSE ──────────┤
+   └─────────────┘                                │
+                                                  ▼
+                                           ┌─────────────────┐
+                                           │ Netlify Blobs   │
+                                           │ ─ jobs-active   │
+                                           │ ─ jobs-archive  │
+                                           │ ─ jobs-chunks   │
+                                           └────────┬────────┘
+                                                    │
+                          ┌─────────────────────────┘
+                          │ long polling 24s
+                          │ + claim atómico (CAS)
                           ▼
-                  ┌────────────────┐    fetch real     ┌────────────────────┐
-                  │  worker.js     │ ────────────────► │ api.openai.com /   │
-                  │  (en Theia)    │ ◄──────────────── │ api.anthropic.com  │
-                  └─────┬──────────┘                   └────────────────────┘
-                        │ POST /api/jobs/:id/result
-                        ▼
-                  ┌──────────────┐
-                  │ jobs-archive │
-                  └──────────────┘
+              ┌──────────────────────────┐    fetch streaming    ┌─────────────────────┐
+              │  worker.js (en Theia)    │ ──────────────────►   │ api.openai.com /    │
+              │  Pool de N slots         │ ◄── chunks SSE ────── │ api.anthropic.com   │
+              │                          │                       └─────────────────────┘
+              └──────────────────────────┘
+                          │
+                          │ POST /api/jobs/:id/chunks  (stream chunks)
+                          │ POST /api/jobs/:id/result  (final + metadata)
+                          ▼
+                    Netlify Blobs
 ```
 
 El cliente nunca toca directamente a OpenAI / Anthropic. Tampoco conoce las
@@ -58,18 +93,27 @@ de la autenticación entre OpenChaw y los proveedores.
 
 ## Componentes
 
-### Backend serverless (`netlify/functions/`)
+### Edge Functions (`netlify/edge-functions/`)
+
+Corren en Deno, plan free permite 1M invocaciones/mes y **no cobran
+runtime aparte**. Timeout 30 s con streaming response soportado nativo.
 
 | Archivo | Responsabilidad |
 |---|---|
-| `gateway.js` | API gateway transparente para `/v1/*`, `/anthropic/*`, `/openai/*`. Detecta provider, valida auth de OpenChaw, encola HTTP job, espera respuesta, opcional fake-streaming SSE. |
-| `proxy.js` | Endpoint genérico `POST /api/proxy` para que el frontend de `/tunnel/` haga peticiones HTTP arbitrarias a través del worker. |
-| `run.js` | `POST /api/run` — encola un comando shell y espera el resultado hasta 25 s en la misma invocación. |
-| `jobs.js` | Cola de trabajos: crear (`POST /api/jobs`), reclamar siguiente con long polling (`GET /api/jobs/next?wait=N`), entregar resultado (`POST /api/jobs/:id/result`), consultar (`GET /api/jobs/:id`), borrar uno o vaciar stores (`DELETE /api/jobs/{archive|active}`). |
-| `ping.js` | Health-check trivial (`GET /.netlify/functions/ping`). |
+| `gateway.js` | API gateway transparente para `/v1/*`, `/anthropic/*`, `/openai/*`. Detecta provider, valida auth, encola job, y devuelve **streaming SSE real**: si `stream:true` lee chunks numerados de `jobs-chunks` conforme los escribe el worker; si `stream:false` mantiene la conexión viva con heartbeat (espacios en blanco para JSON, `: keepalive` para SSE) hasta que el resultado aparezca en archive. Cap real 28.5 s con cleanup de chunks al cerrar. |
+| `jobs-next.js` | Long-poll del worker (`GET /api/jobs/next?wait=N`). Reclama jobs con **CAS atómico** (`onlyIfMatch` sobre etag) y verificación posterior por `claimId`, indispensable cuando hay >1 slot del worker llamando concurrentemente. Soporta wait hasta 29 s. |
 
-Todos los handlers son funciones HTTP estándar de Netlify (sin Background
-Functions ni Edge Functions). El timeout máximo es ~26 s.
+### HTTP Functions (`netlify/functions/`)
+
+Plan free: 125k invocaciones/mes + 100h runtime/mes. Timeout 26 s.
+Útiles para operaciones cortas que no necesitan persistir conexiones.
+
+| Archivo | Responsabilidad |
+|---|---|
+| `proxy.js` | `POST /api/proxy` — proxy HTTP genérico para que el frontend de `/tunnel/` haga peticiones arbitrarias a través del worker. Devuelve 202+id si excede 25 s para que el cliente continúe vía polling. |
+| `run.js` | `POST /api/run` — encola comando shell y espera resultado hasta 25 s en la misma invocación. |
+| `jobs.js` | Cola de trabajos: `POST /api/jobs` (encolar), `POST /api/jobs/:id/result` (worker entrega resultado), `POST /api/jobs/:id/chunks` (worker entrega chunks SSE en streaming), `DELETE /api/jobs/:id/chunks` (cleanup), `GET /api/jobs/:id` (consultar), `DELETE /api/jobs/:id` (borrar uno), `DELETE /api/jobs/{archive\|active}` (vaciar stores). |
+| `ping.js` | Health-check trivial (`GET /.netlify/functions/ping`). |
 
 ### Worker (`worker/worker.js`)
 
@@ -78,24 +122,39 @@ Proceso Node 20+ que el usuario arranca en su máquina:
 ```bash
 git clone https://github.com/IngARodriguez/netlify-backend
 export JOBS_BASE_URL=https://tu-sitio.netlify.app
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
 cd netlify-backend
 node worker/worker.js
 ```
 
-Lo que hace:
+Características:
 
-- Bucle infinito que llama a `GET /api/jobs/next?wait=24`. Long polling:
-  cada invocación de Function dura hasta 24 s o se corta cuando llega un
-  job. Idle = 1 request cada 24 s.
-- Si el job es `type: "shell"`: ejecuta el comando con
-  `child_process.exec` (bash, max 30 s, max buffer 1 MB) y devuelve
-  `stdout` / `stderr` / `exitCode`.
-- Si el job es `type: "http"`: hace `fetch(req.url, ...)` y devuelve
-  `status` / `headers` / `body`. **Inyecta automáticamente** las API
-  keys reales para Anthropic (`x-api-key`) y OpenAI (`Authorization`)
-  cuando el destino es `api.anthropic.com` o `api.openai.com`.
-- Cuerpo de la respuesta truncado a 1 MB (configurable). Cuerpo binario
-  no soportado todavía.
+- **Pool concurrente**: arranca `WORKER_CONCURRENCY` slots paralelos
+  (default 5, máx 50). Cada slot corre su propio bucle independiente de
+  `claimNext → runJob → postResult`. Un Sonnet/4096-tokens ocupando un
+  slot ya no bloquea respuestas ligeras en los demás slots.
+- **Long-poll inteligente**: cada slot llama a `GET /api/jobs/next?wait=24`
+  sobre la Edge Function. Idle = ~150 polls/h en total.
+- **Streaming real al provider** (`runHttpStream`): cuando el job tiene
+  `streaming: true`, el worker hace `fetch(provider, {stream:true})`,
+  parsea los eventos SSE incrementalmente y los empuja en batches de
+  ~150 ms o 4 chunks a `POST /api/jobs/:id/chunks`. La respuesta final
+  reconstruida también se guarda en archive para que clientes
+  no-streaming puedan recuperarla.
+- **Modo no-streaming** (`runHttp`): si el job no es streaming, hace
+  `fetch().text()` clásico y guarda el cuerpo entero en archive.
+- **Modo shell** (`runShell`): `child_process.exec` con `bash`, max 30 s,
+  buffer 1 MB.
+- **Auto-auth**: inyecta automáticamente las API keys reales para
+  Anthropic (`x-api-key` + `anthropic-dangerous-direct-browser-access`)
+  y OpenAI (`Authorization: Bearer`) cuando el destino es
+  `api.anthropic.com` o `api.openai.com`. Strippea `Origin/Referer` que
+  pudieran haberse colado.
+- **Timeouts separados**: `CMD_TIMEOUT_MS` (default 30 s) para shell,
+  `HTTP_TIMEOUT_MS` (default 5 min) para fetch HTTP — antes era un solo
+  cap que mataba respuestas largas a los 30 s.
+- **Tolerante a barras finales** en `JOBS_BASE_URL`.
 
 Token: por defecto `JOBS_WORKER_TOKEN = "admin"`. Solo hace falta
 exportar uno distinto si lo cambiaste también en Netlify.
@@ -106,34 +165,118 @@ exportar uno distinto si lo cambiaste también en Netlify.
 public/
 ├── index.html              ← dashboard
 ├── manifest.webmanifest    ← PWA
-├── icon.svg                ← icono PWA y favicon
+├── icon.svg
 ├── run/
-│   └── index.html          ← terminal estilo iOS
+│   └── index.html          ← terminal estilo macOS
 └── tunnel/
     ├── index.html          ← chat
     ├── style.css
-    └── js/                 ← 13 módulos ES nativos
+    └── js/                 ← módulos ES nativos, sin dependencias
 ```
 
-El chat de `/tunnel/` está partido en módulos ES (cargados con
-`<script type="module">`):
+Módulos del chat (`/tunnel/js/`):
 
 | Módulo | Responsabilidad |
 |---|---|
 | `app.js` | Composición e inicialización (event wiring + IIFE final). |
-| `dom.js` | Referencias a elementos DOM y helpers (`escapeHtml`, `paintRangeFill`). |
+| `dom.js` | Referencias DOM, `escapeHtml`, `paintRangeFill`. |
 | `icons.js` | SVG inline de OpenAI / Anthropic / archivos. |
-| `markdown.js` | Renderizador de markdown propio (~80 líneas). Sin librerías externas. |
+| `markdown.js` | Renderizador propio (~80 líneas), sin librerías. |
 | `status.js` | Footer del composer con estados *idle / info / thinking / ok / error*. |
 | `ui.js` | Drawer de settings, sidebar mobile, autoresize del textarea. |
-| `models.js` | Catálogo de modelos rápidos (`FAST_MODEL`), slider de `max_tokens` adaptativo según modelo, `populateModelSelect`, `fetchModels`. |
-| `attachments.js` | Pipeline de archivos: file picker, drag & drop, paste, validación de tamaño/tipo, lectura base64, `buildContentParts` por provider. |
-| `chats.js` | Persistencia de chats en `localStorage`, migración de claves antiguas, `CustomEvent` cuando cambia la lista. |
-| `greeting.js` | Saludos dinámicos del empty state (25 *moods* + fallback de 30 frases). |
+| `models.js` | Catálogo, slider de `max_tokens` adaptativo, cache local. |
+| `attachments.js` | File picker, drag & drop, paste, base64, `buildContentParts`. |
+| `chats.js` | Persistencia en `localStorage`, migración, `CustomEvent`. |
+| `greeting.js` | Saludos dinámicos del empty state. |
 | `render.js` | `messageNode`, `emptyStateNode`, `typingNode`, `renderHistory`. |
-| `chat-list.js` | Sidebar de conversaciones (renderizado, switch, delete). |
-| `model-picker.js` | Dropdown custom estilo claude.ai que sustituye al `<select>` nativo del modelo. |
-| `send.js` | `buildRequest`, pipeline completa de envío con typing indicator. |
+| `chat-list.js` | Sidebar de conversaciones. |
+| `model-picker.js` | Dropdown custom estilo claude.ai. |
+| `system-prompt.js` | Tab de system prompt por chat (persistido). |
+| **`stream.js`** | **Parser SSE async-iterable (`iterSSE`).** |
+| `send.js` | Pipeline de envío. Si el caso es chat normal, abre SSE al gateway con `stream:true` y pinta tokens en vivo; si es image-gen o responses-API, va por `/api/proxy` con polling. |
+
+---
+
+## Streaming end-to-end
+
+La pieza estrella. El flujo cuando un cliente pide `stream: true`:
+
+```
+Cliente ──SSE GET /v1/messages──► Edge Function gateway
+                                    │
+                                    ▼
+                                  Netlify Blobs (jobs-active)
+                                    │
+                                    ▼ claim atómico
+                                  Worker slot
+                                    │
+                                    ▼ fetch(provider, stream:true)
+                                  api.anthropic.com / api.openai.com
+                                    │
+                                    ▼ ReadableStream → parse SSE → batches
+                                  POST /api/jobs/:id/chunks (HTTP Function)
+                                    │
+                                    ▼ setJSON("chunks/{id}/{seq}", chunk)
+                                  Netlify Blobs (jobs-chunks)
+                                    ▲
+                          gateway   │ poll cada 100ms
+                                    │ tryEnqueue chunks en orden
+                                    ▼
+                          Cliente recibe SSE en tiempo real
+                                    │
+                                    ▼
+                          worker termina → {done:true} → gateway cierra → cleanup
+```
+
+**Latencias típicas** (medidas en producción):
+
+| Tarea | Antes | Ahora |
+|---|---|---|
+| TTFT Sonnet 4096 tokens | 30-80 s (esperaba completo) | **~2 s** |
+| Sonnet ensayo 30 párrafos | 504 a los 25 s | **chunks fluyendo continuamente, ~28 s totales** |
+| Haiku "hola" | ~3 s | ~3 s (sin diferencia visible) |
+| 5 prompts paralelos | serializados (3-10 s cada uno) | **paralelos (~3 s cada uno)** |
+
+**Compatible con**:
+
+```python
+# Anthropic SDK
+from anthropic import Anthropic
+client = Anthropic(api_key="admin", base_url="https://tu-sitio.netlify.app")
+with client.messages.stream(
+    model="claude-sonnet-4-6",
+    max_tokens=2048,
+    messages=[{"role": "user", "content": "cuenta una historia"}],
+) as s:
+    for text in s.text_stream:
+        print(text, end="", flush=True)
+
+# OpenAI SDK
+from openai import OpenAI
+client = OpenAI(api_key="admin", base_url="https://tu-sitio.netlify.app/v1")
+stream = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "cuenta una historia"}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="", flush=True)
+```
+
+**Heartbeat**: si el provider tarda en empezar, el gateway emite cada 5 s
+un keepalive — un espacio en blanco para JSON (válido como prefix), un
+comentario SSE (`: keepalive\n\n`) para streams. La conexión TCP queda
+viva sin tocar el wire format del provider.
+
+**Edge timeout**: las Edge Functions de Netlify cortan a los 30 s. Dejamos
+margen y cerramos a los 28.5 s. Si el provider aún no terminó, el gateway
+emite un comentario `: edge_timeout id=<job_id>` y cierra. El job sigue
+corriendo en el worker y queda en `jobs-archive`, recuperable con:
+
+```bash
+curl -H "Authorization: Bearer admin" \
+  https://tu-sitio.netlify.app/api/jobs/<id>
+```
 
 ---
 
@@ -141,68 +284,62 @@ El chat de `/tunnel/` está partido en módulos ES (cargados con
 
 ### `/` — dashboard
 
-Landing del sitio. Lista las dos apps (`Run command`, `Tunnel chat`,
-`API gateway`), documenta los endpoints, ofrece snippets copiables del
-gateway con la URL del sitio rellenada automáticamente, e incluye un
-botón de mantenimiento para vaciar los blobs acumulados.
+Landing del sitio. Lista las apps, documenta los endpoints del gateway,
+ofrece snippets copiables con la URL del sitio rellenada
+automáticamente, e incluye un botón de mantenimiento para vaciar los
+blobs acumulados.
 
 ### `/tunnel/` — OpenChaw chat
 
-Chat web estilo claude.ai sobre el `POST /api/proxy`:
+Chat web estilo claude.ai con **streaming token-a-token**:
 
 - **Sidebar de conversaciones** con título derivado del primer prompt,
   borrado por chat, botón "Nueva conversación".
+- **System prompt por chat** persistido en localStorage.
 - **Selector de provider y modelo** — dos dropdowns (provider nativo,
   modelo en picker custom con info de tokens y check del activo).
-- **Slider de `max_tokens`** que se ajusta automáticamente al máximo
-  real del modelo seleccionado (tabla por familia: gpt-5, gpt-4o,
-  claude-opus, claude-sonnet, etc.).
-- **Composer** con botón de adjuntar (clip), drag & drop, paste de
-  imágenes desde el portapapeles. Tipos soportados: imágenes
-  (png/jpg/gif/webp), PDF (solo Anthropic), texto (md, json, csv,
-  código fuente). Límite: 5 MB por archivo, 3 archivos por mensaje.
-- **Mensajes** del asistente con markdown renderizado (headers, listas,
-  bold/italic, code blocks, blockquotes, links, hr); del usuario con
+- **Slider de `max_tokens`** ajustado al máximo real del modelo
+  seleccionado.
+- **Composer** con adjuntar (clip), drag & drop, paste de imágenes desde
+  portapapeles. Tipos: imágenes (png/jpg/gif/webp), PDF (solo
+  Anthropic), texto / código fuente. Límite: 5 MB por archivo, 3 archivos
+  por mensaje.
+- **Streaming en vivo**: status footer pasa por
+  `pensando...` → `stream · 234 chars · 4s` → `ok · 12345 ms`. El texto
+  fluye carácter a carácter en pantalla.
+- **Polling cliente como fallback** (10 min) para casos no-streaming
+  (image-gen, responses-API): si `/api/proxy` devuelve 202 con id, el
+  cliente sigue poleando hasta que el job termine.
+- **Mensajes** del asistente con markdown renderizado; del usuario con
   preview de adjuntos y texto en pre-wrap.
 - **Empty state dinámico**: cada chat vacío genera un saludo creativo
-  llamando al modelo rápido del provider activo (`gpt-4o-mini` o
-  `claude-haiku-4-5`) con prompt de mood random — fallback inmediato
-  desde una lista local mientras se espera la respuesta.
-- **Typing indicator** estilo Telegram (3 puntos rebotando + halo
-  pulsante en el avatar) durante la espera.
-- **Footer de status** con dot indicador de color y fuente monospace
-  (`pensando...` en naranja, `ok · 1234 ms` en verde, errores en rojo).
-- **PWA instalable** (manifest, theme color, apple-touch-icon,
-  `display: standalone`). Respeta `safe-area-inset-*` para iPhone con
-  notch.
-- **Mobile-first**: sidebar como drawer con overlay, hamburger en el
-  topbar, tamaños de touch >38 px, viewport `100dvh` para que la URL
-  bar de iOS no tape el composer, `font-size: 16 px` en el textarea
-  para evitar zoom-on-focus en iOS.
-- **Persistencia local** en `localStorage` con prefijo `openchaw_*`
-  (chats, chat activo) y `tunnel_*` (preferencias: token, provider,
-  modelo elegido, max_tokens por modelo, lista de modelos cacheada).
+  llamando al modelo rápido del provider activo.
+- **Typing indicator** estilo Telegram durante el TTFT.
+- **PWA instalable** con `display: standalone`, `safe-area-inset-*`,
+  manifest, theme color, apple-touch-icon.
+- **Mobile-first**: drawer con overlay, hamburger, viewport `100dvh`,
+  font-size 16px en textarea para evitar zoom-on-focus en iOS.
+- **Persistencia local** en `localStorage` con prefijo `openchaw_*` y
+  `tunnel_*`. Migración automática desde claves `outpost_*` y
+  `tunnel_hist_*` viejas.
 
-### `/run/` — terminal estilo iOS
+### `/run/` — terminal estilo macOS
 
-UI dark con apariencia de ventana de macOS (traffic lights rojo / amarillo
-/ verde) sobre `POST /api/run`:
+UI dark con apariencia de ventana de macOS sobre `POST /api/run`:
 
-- Campo `token` (persistido en localStorage), textarea con prompt `$`
-  verde, dos botones: **Run** (sincrónico, espera ≤25 s) y
-  **Enqueue + polling** (encola y poolea `GET /api/jobs/:id` cada
-  segundo durante 60 s).
-- Pill de estado con dot de color animado (`pending / running / done /
-  error`).
-- Tres paneles: `stdout`, `stderr` (con borde sutil rojo) y `meta` (id,
-  exitCode, duración, error).
+- Campo `token` (persistido), textarea con prompt `$` verde, botones
+  **Run** (sincrónico, ≤25 s) y **Enqueue + polling** (encola y poolea
+  cada segundo durante 60 s).
+- Pill de estado animado (`pending / running / done / error`).
+- Tres paneles: `stdout`, `stderr` (borde rojo), `meta` (id, exitCode,
+  duración, error).
 
 ---
 
 ## API Gateway
 
-La pieza más interesante. Reescribe cualquier llamada que parezca de OpenAI
-o Anthropic a través del worker, **manteniendo la URL pública del sitio**.
+Reescribe cualquier llamada que parezca de OpenAI o Anthropic a través
+del worker, **manteniendo la URL pública del sitio**.
 
 ### Detección automática del provider
 
@@ -222,10 +359,14 @@ El cliente pone su token de OpenChaw como:
 - `x-api-key: <token>` (estilo Anthropic) **o**
 - `Authorization: Bearer <token>` (estilo OpenAI)
 
-El gateway valida, **strippa el header de auth del cliente** y reenvía el
-resto al worker. El worker, al hacer `fetch()` real al provider, inyecta
-la API key real desde sus env vars (`ANTHROPIC_API_KEY` /
+El gateway valida, **strippa el header de auth del cliente** y reenvía
+el resto al worker. El worker, al hacer `fetch()` real al provider,
+inyecta la API key real desde sus env vars (`ANTHROPIC_API_KEY` /
 `OPENAI_API_KEY`).
+
+Los headers solo-de-navegador (`Origin`, `Referer`, `Cookie`,
+`Sec-Fetch-*`, `Sec-Ch-*`) se descartan en el gateway antes de pasar al
+worker — Anthropic los rechazaría con CORS error si llegaran.
 
 Si `JOBS_CLIENT_TOKEN` está vacío en el entorno de Netlify, el gateway
 deshabilita la auth (no recomendado en endpoints públicos).
@@ -243,59 +384,50 @@ client = OpenAI(api_key="admin", base_url="https://tu-sitio.netlify.app/v1")
 ```
 
 ```bash
-# curl Anthropic
-curl https://tu-sitio.netlify.app/v1/messages \
+# curl Anthropic — streaming real
+curl -N https://tu-sitio.netlify.app/v1/messages \
   -H "x-api-key: admin" \
   -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
-  -d '{"model":"claude-sonnet-4-6","max_tokens":1024,"messages":[{"role":"user","content":"Hola"}]}'
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1024,
+    "stream": true,
+    "messages": [{"role":"user","content":"Hola"}]
+  }'
 
-# curl OpenAI
+# curl OpenAI — sin stream
 curl https://tu-sitio.netlify.app/v1/chat/completions \
   -H "Authorization: Bearer admin" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hola"}]}'
 ```
 
-> Nota sobre `base_url` en SDKs:
-> el SDK de Anthropic concatena `/v1/messages` al `base_url`, así que **no**
-> se le pone `/v1`. El SDK de OpenAI concatena `/chat/completions`, así que
-> **sí** lleva `/v1` al final. Si los inviertes, llegará al gateway una URL
-> con `/v1` duplicado y Anthropic devolverá 422.
-
-### Streaming
-
-`stream: true` se acepta y se entrega como **fake streaming**: el worker
-hace la petición sin streaming, recibe la respuesta completa, y el gateway
-reconstruye los eventos SSE estándar (Anthropic: `message_start /
-content_block_start / content_block_delta×N / content_block_stop /
-message_delta / message_stop`. OpenAI: `chat.completion.chunk` × N + `data:
-[DONE]`). El texto se trocea en deltas de ~40 caracteres y se entrega con
-un `ReadableStream` que enqueue cada evento con un *gap* de 8 ms para
-forzar transferencia chunked real.
-
-Esto hace que clientes que **exigen** SSE (OpenCode, Cline, Cursor,
-Anthropic SDK `.stream()`) funcionen transparentemente. **No** simula el
-efecto visual de tokens apareciendo uno a uno: la respuesta completa del
-modelo se calcula primero y luego se entrega en chunks rápidos.
+> Nota sobre `base_url`: el SDK de Anthropic concatena `/v1/messages`
+> al `base_url`, así que **no** se le pone `/v1`. El SDK de OpenAI
+> concatena `/chat/completions`, así que **sí** lleva `/v1` al final. Si
+> los inviertes, llegará al gateway una URL con `/v1` duplicado y el
+> provider devolverá 422.
 
 ---
 
 ## Tabla completa de endpoints
 
-| Método | Ruta | Auth | Descripción |
-|---|---|---|---|
-| `POST` | `/api/jobs` | Bearer `JOBS_CLIENT_TOKEN` | Encola un job (`type: "shell" \| "http"`). |
-| `GET` | `/api/jobs/next?wait=N` | Bearer `JOBS_WORKER_TOKEN` | Worker reclama el siguiente pendiente. `wait` ≤ 24 (long polling). |
-| `POST` | `/api/jobs/:id/result` | Bearer `JOBS_WORKER_TOKEN` | Worker entrega resultado (mueve `active → archive`). |
-| `GET` | `/api/jobs/:id` | Bearer `JOBS_CLIENT_TOKEN` | Cliente consulta estado / resultado. |
-| `DELETE` | `/api/jobs/:id` | Bearer `JOBS_CLIENT_TOKEN` | Borra un job. |
-| `DELETE` | `/api/jobs/archive` | Bearer `JOBS_CLIENT_TOKEN` | Vacía todos los blobs en `jobs-archive`. |
-| `DELETE` | `/api/jobs/active` | Bearer `JOBS_CLIENT_TOKEN` | Vacía todos los blobs en `jobs-active`. |
-| `POST` | `/api/run` | Bearer `JOBS_CLIENT_TOKEN` | Ejecuta comando shell y espera ≤25 s. |
-| `POST` | `/api/proxy` | Bearer `JOBS_CLIENT_TOKEN` | Proxy HTTP con `{url, method, headers, body}`. |
-| `*` | `/v1/*` | `x-api-key` o `Bearer` | Gateway transparente OpenAI/Anthropic. |
-| `*` | `/anthropic/*` `/openai/*` | `x-api-key` o `Bearer` | Gateway con prefijo explícito. |
+| Método | Ruta | Tipo | Auth | Descripción |
+|---|---|---|---|---|
+| `POST` | `/api/jobs` | HTTP | Bearer `JOBS_CLIENT_TOKEN` | Encola un job (`type: "shell" \| "http"`). |
+| `GET` | `/api/jobs/next?wait=N` | **Edge** | Bearer `JOBS_WORKER_TOKEN` | Worker reclama el siguiente pendiente con CAS atómico. `wait` ≤ 29. |
+| `POST` | `/api/jobs/:id/result` | HTTP | Bearer `JOBS_WORKER_TOKEN` | Worker entrega resultado final (mueve `active → archive`). |
+| `POST` | `/api/jobs/:id/chunks` | HTTP | Bearer `JOBS_WORKER_TOKEN` | Worker entrega un batch de chunks SSE para streaming. |
+| `DELETE` | `/api/jobs/:id/chunks` | HTTP | Bearer `JOBS_*_TOKEN` | Limpia los chunks de un job (post-stream). |
+| `GET` | `/api/jobs/:id` | HTTP | Bearer `JOBS_CLIENT_TOKEN` | Consulta estado / resultado completo. |
+| `DELETE` | `/api/jobs/:id` | HTTP | Bearer `JOBS_CLIENT_TOKEN` | Borra un job. |
+| `DELETE` | `/api/jobs/archive` | HTTP | Bearer `JOBS_CLIENT_TOKEN` | Vacía todos los blobs en `jobs-archive`. |
+| `DELETE` | `/api/jobs/active` | HTTP | Bearer `JOBS_CLIENT_TOKEN` | Vacía todos los blobs en `jobs-active`. |
+| `POST` | `/api/run` | HTTP | Bearer `JOBS_CLIENT_TOKEN` | Ejecuta comando shell y espera ≤25 s. |
+| `POST` | `/api/proxy` | HTTP | Bearer `JOBS_CLIENT_TOKEN` | Proxy HTTP genérico vía worker. |
+| `*` | `/v1/*` | **Edge** | `x-api-key` o `Bearer` | Gateway transparente con streaming SSE real. |
+| `*` | `/anthropic/*` `/openai/*` | **Edge** | `x-api-key` o `Bearer` | Gateway con prefijo explícito. |
 
 ---
 
@@ -306,24 +438,62 @@ modelo se calcula primero y luego se entrega en chunks rápidos.
 | Variable | Default si no se setea | Para qué |
 |---|---|---|
 | `JOBS_CLIENT_TOKEN` | `admin` | Auth que valida el gateway / proxy / run / jobs frente a clientes. |
-| `JOBS_WORKER_TOKEN` | `admin` | Auth que valida `/api/jobs/next` y `/api/jobs/:id/result` frente al worker. |
-
-Si están seteadas en el dashboard de Netlify, esos valores ganan. Si no,
-el código usa `"admin"` por fallback (cómodo para empezar; **inseguro**
-en sitios públicos).
+| `JOBS_WORKER_TOKEN` | `admin` | Auth que valida `/api/jobs/next` y `/api/jobs/:id/result|chunks` frente al worker. |
 
 ### Worker (máquina local / Theia)
 
 | Variable | Default | Para qué |
 |---|---|---|
-| `JOBS_BASE_URL` | `https://enviromentfree.netlify.app` | URL del sitio Netlify donde corre el backend. **Cambiar siempre.** |
+| `JOBS_BASE_URL` | `https://enviromentfree.netlify.app` | URL del sitio Netlify donde corre el backend. **Cambiar siempre.** Tolerante a barras finales. |
 | `JOBS_WORKER_TOKEN` | `admin` | Debe coincidir con el del sitio. |
-| `LONG_POLL_SEC` | `24` | Segundos de espera por petición a `/api/jobs/next`. Máx 24. |
+| `LONG_POLL_SEC` | `24` | Segundos de espera por petición a `/api/jobs/next`. Máx 24 (la Edge Function aguanta 29 con margen). |
 | `ERROR_BACKOFF_MS` | `5000` | Sleep tras error de red antes de reintentar. |
-| `CMD_TIMEOUT_MS` | `30000` | Timeout para shell exec y para fetch HTTP del worker. |
+| `CMD_TIMEOUT_MS` | `30000` | Timeout para shell exec. |
+| `HTTP_TIMEOUT_MS` | `300000` (5 min) | Timeout para fetch HTTP del worker — separado de shell para no matar respuestas largas de modelos. |
+| `WORKER_CONCURRENCY` | `5` | Número de slots paralelos del pool del worker. Min 1, max 50. |
 | `VERBOSE` | `0` | `1` para logs detallados (latencia por poll, contenido de jobs, etc.). |
 | `ANTHROPIC_API_KEY` | — | Inyectada como `x-api-key` cuando el destino es `api.anthropic.com`. |
 | `OPENAI_API_KEY` | — | Inyectada como `Authorization: Bearer` cuando el destino es `api.openai.com`. |
+
+---
+
+## Capacidad y rendimiento
+
+Estimaciones reales medidas contra Netlify free + worker pool 5:
+
+| Carga | Aguanta | Comentario |
+|---|---|---|
+| 1 usuario, chat web casual | ✅ holgado | <5% del cap mensual |
+| 1 agente (Cline / OpenCode / Cursor) | ✅ sin tocar nada | ~3-5 req/min sostenido |
+| 3 agentes paralelos | ✅ con default | Worker pool de 5 atiende sin colas |
+| 5-10 agentes paralelos | ✅ con `WORKER_CONCURRENCY=10` | Vigilar cap HTTP Functions (cada chunk es 1 invocación) |
+| 10+ agentes / sesiones de horas en streaming | ⚠️ rozas el cap free de HTTP Functions | Considerar Pro de Netlify ($19/mes → 1M HTTP req + 500h runtime) |
+| Producción multi-usuario | ❌ worker single-host | Necesita arquitectura redundante |
+
+**Cuellos de botella reales**:
+
+1. **HTTP Functions** (125k/mes free): cada respuesta streaming genera
+   5-15 invocaciones de `/api/jobs/:id/chunks`. Es el primer cap que se
+   alcanza con uso intenso.
+2. **Cap 28.5 s del Edge Function**: respuestas que el provider tarda más
+   de eso en producir se truncan para el cliente streaming, aunque el
+   job se completa en archive y es recuperable por id.
+3. **Rate limit del provider**: Anthropic ~50 req/min, OpenAI similar
+   según tier. Te frena antes que Netlify en uso intenso.
+4. **Worker single-host**: si tu Theia se apaga, todo cae.
+
+**Tunables sin tocar código**:
+
+```bash
+# Más slots paralelos para alta concurrencia
+export WORKER_CONCURRENCY=20
+
+# Aceptar respuestas más largas (default 5 min)
+export HTTP_TIMEOUT_MS=600000
+
+# Ver lo que pasa en detalle
+export VERBOSE=1
+```
 
 ---
 
@@ -332,8 +502,9 @@ en sitios públicos).
 ### Netlify
 
 `netlify.toml` ya define `publish = "public"` y
-`functions = "netlify/functions"`. No hay redirects manuales: cada Function
-declara su propia `path` con `export const config`.
+`functions = "netlify/functions"`. Las Edge Functions se autodetectan en
+`netlify/edge-functions/`. Cada Function declara su propia `path` con
+`export const config`.
 
 ```bash
 # desde el repo
@@ -341,8 +512,8 @@ npm install
 npx netlify deploy --prod
 ```
 
-O conecta el repo desde el dashboard de Netlify: cada push a `main` dispara
-deploy automático.
+O conecta el repo desde el dashboard de Netlify: cada push a `main`
+dispara deploy automático.
 
 ### Worker en Theia (o cualquier Linux con node ≥ 20)
 
@@ -351,6 +522,8 @@ git clone https://github.com/IngARodriguez/netlify-backend.git
 cd netlify-backend
 
 export JOBS_BASE_URL=https://tu-sitio.netlify.app
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
 # JOBS_WORKER_TOKEN no es necesario si dejaste el default "admin"
 
 node worker/worker.js
@@ -358,7 +531,7 @@ node worker/worker.js
 
 Para correrlo en background con respawn automático: `pm2`, `systemd`,
 `tmux`, `screen`, o el método que prefieras. El proceso es ligero
-(<60 MB RAM, CPU casi cero en idle).
+(<60 MB RAM con concurrencia 5, CPU casi cero en idle).
 
 ---
 
@@ -367,27 +540,29 @@ Para correrlo en background con respawn automático: `pm2`, `systemd`,
 ```
 netlify-backend/
 ├── README.md
-├── package.json                        # dependencias mínimas (@netlify/blobs)
+├── package.json                        # @netlify/blobs ^10.7.4
 ├── netlify.toml                        # publish/functions config
 ├── netlify/
-│   └── functions/
-│       ├── gateway.js                  # API gateway transparente
-│       ├── proxy.js                    # /api/proxy
-│       ├── run.js                      # /api/run
-│       ├── jobs.js                     # cola jobs + DELETE archive/active
-│       └── ping.js                     # health check
+│   ├── functions/                      # HTTP Functions (cap 26s)
+│   │   ├── proxy.js                    # /api/proxy
+│   │   ├── run.js                      # /api/run
+│   │   ├── jobs.js                     # /api/jobs/*  (cola + chunks endpoint)
+│   │   └── ping.js                     # health check
+│   └── edge-functions/                 # Edge Functions (cap 30s, sin runtime cap)
+│       ├── gateway.js                  # /v1/*  /anthropic/*  /openai/*  con streaming SSE
+│       └── jobs-next.js                # /api/jobs/next  long-poll con CAS atómico
 ├── worker/
-│   └── worker.js                       # proceso local que ejecuta jobs
+│   └── worker.js                       # pool concurrente, runHttp + runHttpStream
 ├── public/
 │   ├── index.html                      # dashboard
-│   ├── manifest.webmanifest            # PWA manifest
-│   ├── icon.svg                        # icon (ahora compartido con Anthropic)
+│   ├── manifest.webmanifest            # PWA
+│   ├── icon.svg
 │   ├── run/
-│   │   └── index.html                  # terminal estilo iOS
+│   │   └── index.html                  # terminal estilo macOS
 │   └── tunnel/
 │       ├── index.html                  # chat
-│       ├── style.css                   # ~ 900 líneas
-│       └── js/                         # 13 módulos ES nativos
+│       ├── style.css
+│       └── js/
 │           ├── app.js
 │           ├── attachments.js
 │           ├── chat-list.js
@@ -399,8 +574,10 @@ netlify-backend/
 │           ├── model-picker.js
 │           ├── models.js
 │           ├── render.js
-│           ├── send.js
+│           ├── send.js                 # streaming + polling fallback
 │           ├── status.js
+│           ├── stream.js               # parser SSE async-iterable
+│           ├── system-prompt.js
 │           └── ui.js
 └── clients/
     └── powershell/
@@ -413,46 +590,52 @@ netlify-backend/
 
 ### Worker
 
-- El worker debe estar **encendido** para que cualquier llamada al gateway,
-  `/tunnel/` o `/run/` funcione. Sin worker, los jobs se quedan en `pending`
-  hasta que el cliente o la Function expiren (504).
+- El worker debe estar **encendido** para que cualquier llamada al
+  gateway, `/tunnel/` o `/run/` funcione. Sin worker, los jobs se quedan
+  en `pending` hasta que el cliente o la Function expiren.
 - El worker hace polling continuo: con `LONG_POLL_SEC=24` consume
-  ~3,600 invocaciones de Function al día (≈ 108 k/mes). El runtime
-  acumulado en idle es alto (24 h/día porque cada poll dura los 24 s
-  esperando). En el plan free de Netlify (≈ 100 h/mes de runtime + 125 k
-  invocaciones/mes), eso revienta el límite de runtime.
+  ~3,600 invocaciones/día sobre `jobs/next` (Edge), unas 108k/mes.
+  El plan free de Edge Functions cubre 1M, así que sobra.
+
+### Cap del Edge Function (28.5 s)
+
+- Para streaming, si el provider tarda más de 28.5 s en producir la
+  respuesta completa, el cliente recibe los primeros chunks y luego un
+  comentario `: edge_timeout id=<job_id>` y la conexión cierra.
+- El job sigue completándose en el worker y la respuesta queda en
+  `jobs-archive` durante un tiempo, recuperable con
+  `GET /api/jobs/:id`.
+- El chat web **no se ve afectado por este cap** porque el flujo via
+  `/api/proxy` usa polling cliente con 10 min de margen.
 
 ### Body / archivos
 
 - Body máximo ~6 MB por la limitación de Netlify Functions. Imágenes
-  grandes en `/v1/messages` o adjuntos pesados en `/tunnel/` pueden topar.
-- El cuerpo de la respuesta del worker se trunca a 1 MB (configurable con
-  `HTTP_BODY_CAP`) para no reventar el blob.
-- `localStorage` del navegador (~ 5–10 MB total) limita cuántos chats con
+  grandes en `/v1/messages` o adjuntos pesados en `/tunnel/` pueden
+  topar.
+- El cuerpo de la respuesta del worker (modo no-streaming) se trunca a
+  1 MB (configurable con `HTTP_BODY_CAP`) para no reventar el blob.
+- `localStorage` del navegador (~5–10 MB total) limita cuántos chats con
   imágenes en historial se pueden guardar; al toparse, el código avisa
   con un status en rojo.
 
 ### Streaming
 
-- `stream: true` se acepta pero el modelo responde **completo** primero;
-  los chunks SSE son una emulación. Un cliente que mida latencia hasta el
-  primer token verá cifras parecidas a no-streaming, no a streaming
-  real.
-- No hay soporte de cuerpo binario en respuesta (audio, imágenes
-  generadas) aún; se devuelven como texto/json y algunos endpoints
-  (`/v1/audio/speech`, `/v1/images/generations` con `b64_json`) pueden
-  comportarse mal.
+- Body binario en respuesta (audio, imágenes generadas) sigue sin
+  soporte completo en streaming; los endpoints
+  `/v1/audio/speech`, `/v1/images/generations` con `b64_json` van por
+  el flujo no-streaming (modo polling).
 
 ### Seguridad
 
-- `JOBS_*_TOKEN` por defecto a `"admin"`: cualquier persona que descubra
-  la URL pública del sitio puede ejecutar comandos shell y consumir las
-  API keys del worker. Esto está pensado para desarrollo personal. En
-  producción real conviene **setear** ambas variables en Netlify a un
-  secreto fuerte y propagarlo al worker.
+- `JOBS_*_TOKEN` por defecto a `"admin"`: cualquier persona que
+  descubra la URL pública del sitio puede ejecutar comandos shell y
+  consumir las API keys del worker. Esto está pensado para desarrollo
+  personal. En producción real conviene **setear** ambas variables en
+  Netlify a un secreto fuerte y propagarlo al worker.
 - `JOBS_CLIENT_TOKEN = ""` en Netlify deshabilita la validación del
-  gateway. Útil para abrir endpoints públicos pero peligrosísimo si
-  hay claves de pago en el worker.
+  gateway. Útil para abrir endpoints públicos pero peligrosísimo si hay
+  claves de pago en el worker.
 
 ### Otros
 
@@ -464,25 +647,26 @@ netlify-backend/
 
 ---
 
-## Decisiones abiertas y trabajo futuro
+## Trabajo futuro
 
-Los siguientes puntos quedaron evaluados pero no implementados, en orden
-aproximado de impacto:
+Pendientes priorizados:
 
-1. **Backoff agresivo del worker en idle** para bajar el consumo de
-   Functions de ~108 k/mes a ~3 k/mes a costa de añadir hasta varios
-   minutos de latencia tras periodos largos sin uso.
-2. **Push real desde Netlify hacia el worker** para eliminar el polling
-   del todo. Requiere un canal del lado del worker:
-   - Cloudflare Tunnel (puerto 7844, bloqueado en muchos sandbox tipo
-     Theia).
-   - Cloudflare Workers + WebSocket (puerto 443, casi siempre abierto).
-3. **Streaming verdadero token-a-token** del modelo hasta el cliente.
-   Posible vía polling de chunks en blobs (latencia ~250 ms entre
-   chunks) o vía un canal push de la opción 2.
-4. **Backend persistente para chats** (sincronización entre dispositivos,
-   export/import) usando Netlify Blobs + endpoint protegido.
-5. **Cuerpos binarios** (audio, imágenes generadas) en el worker.
+1. **Refactor `_lib/queue.js`**: extraer la duplicación entre
+   `proxy.js`, `run.js` y la parte HTTP del antiguo gateway que aún
+   queda en `jobs.js`. ~120 líneas menos, una sola fuente de verdad.
+2. **Persistencia de chats backend**: endpoint `/api/chats` con Blobs
+   por token-hash, sincronización entre dispositivos, export/import.
+3. **TTL automático de blobs viejos**: función diaria que limpia
+   `archive` y `chunks` huérfanos > 24 h.
+4. **Backoff adaptativo en worker idle**: si N polls vacíos
+   consecutivos, dormir M minutos antes del siguiente. Ahorro extra de
+   invocaciones a costa de latencia post-idle.
+5. **Resume from chunk N**: endpoint que reanuda un stream desde donde
+   quedó tras `edge_timeout`, para que clientes externos no pierdan la
+   parte truncada.
+6. **Worker multi-host con coordinación**: hoy el CAS atómico ya
+   permite >1 worker hablando con el mismo sitio. Falta operacionalizar
+   un esquema de health-check para failover.
 
 ---
 
