@@ -6,6 +6,7 @@ import {
 import { setStatus, statusFooter } from './status.js';
 import {
   populateModelSelect, updateMaxTokensSlider, MAX_TOKENS_STORAGE_KEY,
+  isImageModel,
 } from './models.js';
 import {
   migrateLegacyHistory, getCurrentChat, persistCurrentChat,
@@ -22,6 +23,13 @@ import { send } from './send.js';
 import { newChat } from './chats.js';
 import './model-picker.js';
 import './system-prompt.js';
+
+/* ─── Placeholder dinámico del composer según modelo activo ─── */
+function updateInputPlaceholder() {
+  inputEl.placeholder = isImageModel(modelSel.value)
+    ? 'Describe la imagen…'
+    : 'Mensaje a OpenChaw...';
+}
 
 /* ─── Composer events ─── */
 formEl.addEventListener('submit', (e) => {
@@ -119,6 +127,7 @@ tokenInput.addEventListener('change', () => {
 modelSel.addEventListener('change', () => {
   localStorage.setItem('tunnel_model_' + providerSel.value, modelSel.value);
   updateMaxTokensSlider();
+  updateInputPlaceholder();
   statusFooter();
 });
 maxTokensInput.addEventListener('input', () => {
@@ -132,6 +141,7 @@ providerSel.addEventListener('change', () => {
   populateModelSelect();
   updateProviderMark();
   updateMaxTokensSlider();
+  updateInputPlaceholder();
   renderHistory();
   statusFooter();
 });
@@ -153,6 +163,7 @@ document.addEventListener('keydown', (e) => {
   populateModelSelect();
   updateProviderMark();
   updateMaxTokensSlider();
+  updateInputPlaceholder();
   renderChatList();
   renderHistory();
   statusFooter();

@@ -97,8 +97,19 @@ function extractPromptText(msg) {
 }
 
 function extractImageResponse(r) {
+  // El provider puede devolver 200 con error en el body (content policy,
+  // prompt rejected, etc.) o 4xx con el mismo shape.  En cualquier caso
+  // throw para que el caller muestre el mensaje al usuario en vez de
+  // pintar un bubble vacío.
+  const errObj = r.body?.error;
+  if (errObj) {
+    const msg = typeof errObj === 'string'
+      ? errObj
+      : (errObj.message || errObj.code || 'error desconocido del provider');
+    throw new Error(msg);
+  }
   const item = r.body && Array.isArray(r.body.data) ? r.body.data[0] : null;
-  if (!item) return '';
+  if (!item) throw new Error('respuesta sin imagen');
   if (item.b64_json) {
     return [{
       type: 'image',
@@ -108,7 +119,7 @@ function extractImageResponse(r) {
   if (item.url) {
     return [{ type: 'image_url', image_url: { url: item.url } }];
   }
-  return '';
+  throw new Error('formato de imagen no reconocido (sin b64_json ni url)');
 }
 
 function extractResponsesText(r) {
@@ -343,10 +354,14 @@ export async function send(prompt) {
   conversationEl.scrollTop = conversationEl.scrollHeight;
 
   sendBtn.disabled = true;
-  setStatus('pensando...');
   const t0 = Date.now();
   try {
     const req = buildRequest(history, userMessage);
+    setStatus(
+      req.kind === 'image' ? 'generando imagen...'
+      : req.kind === 'responses' ? 'pensando (responses)...'
+      : 'pensando...'
+    );
     if (req.kind === 'chat') {
       await sendStreaming({ token, provider, req, newHistory, typing, t0 });
     } else {
