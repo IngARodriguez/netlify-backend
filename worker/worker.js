@@ -9,7 +9,11 @@ const LONG_POLL_SEC = Math.max(1, Math.min(Number(process.env.LONG_POLL_SEC || 2
 const ERROR_BACKOFF_MS = Number(process.env.ERROR_BACKOFF_MS || 5000);
 const CMD_TIMEOUT_MS  = Number(process.env.CMD_TIMEOUT_MS  || 30_000);
 const HTTP_TIMEOUT_MS = Number(process.env.HTTP_TIMEOUT_MS || 5 * 60_000);
-const WORKER_CONCURRENCY = Math.max(1, Math.min(Number(process.env.WORKER_CONCURRENCY || 5), 50));
+const WORKER_CONCURRENCY     = Math.max(1, Math.min(Number(process.env.WORKER_CONCURRENCY     || 5), 50));
+const WORKER_CONCURRENCY_MIN = Math.max(1, Math.min(Number(process.env.WORKER_CONCURRENCY_MIN || 2), WORKER_CONCURRENCY));
+const WORKER_CONCURRENCY_MAX = Math.max(WORKER_CONCURRENCY, Math.min(Number(process.env.WORKER_CONCURRENCY_MAX || 20), 50));
+const WORKER_AUTOSCALE = process.env.WORKER_AUTOSCALE !== "0" && process.env.WORKER_AUTOSCALE !== "false";
+const AUTOSCALE_INTERVAL_MS = Math.max(2_000, Number(process.env.AUTOSCALE_INTERVAL_MS || 8_000));
 const STREAM_FLUSH_MS = Math.max(20, Number(process.env.STREAM_FLUSH_MS || 60));
 const STREAM_BATCH_SIZE = Math.max(1, Number(process.env.STREAM_BATCH_SIZE || 2));
 const MAX_BUFFER = 1024 * 1024;
@@ -304,40 +308,132 @@ function describeJob(job) {
   return `$ ${job.command}`;
 }
 
+// Estado del pool dinámico.  liveSlots contiene los ids de slots que
+// deberían seguir activos; cuando autoscale retira uno, el slot sale del
+// while en cuanto vuelve del próximo claimNext, sin abortar jobs en vuelo.
+const liveSlots = new Set();
+let busySlots = 0;
+let nextSlotId = 0;
+const queueWaitWindow = [];   // últimos N tiempos en cola, para presión
+const QUEUE_WAIT_WINDOW = 30;
+let lastScaleAt = 0;
+
 async function workerSlot(slotId) {
-  while (true) {
-    try {
-      const job = await claimNext();
-      if (!job) continue;
-      const claimedAt = Date.now();
-      const queueWaitMs = claimedAt - Date.parse(job.createdAt);
-      console.log(`[${ts()}] [s${slotId} ${job.id}] ${describeJob(job)}  (esperó ${queueWaitMs}ms en cola)`);
-      const result = await runJob(job);
-      await postResult(job.id, result);
-      const tag = job.type === "http"
-        ? `httpStatus=${result.response ? result.response.status : "err"}`
-        : `exit=${result.exitCode}`;
-      console.log(
-        `[${ts()}] [s${slotId} ${job.id}] ${tag} ` +
-        `cmd=${result.durationMs}ms total=${Date.now() - claimedAt}ms`
-      );
-    } catch (err) {
-      console.error(`[${ts()}] [s${slotId}] loop error:`, err.message);
-      await sleep(ERROR_BACKOFF_MS);
+  liveSlots.add(slotId);
+  try {
+    while (liveSlots.has(slotId)) {
+      try {
+        const job = await claimNext();
+        if (!job) continue;
+        if (!liveSlots.has(slotId)) {
+          // Slot fue retirado mientras esperábamos; devolvemos el job con
+          // un error suave para que se reencole o lo coja otro slot.
+          console.log(`[${ts()}] [s${slotId}] slot retirado mid-claim, releasing ${job.id}`);
+          continue;
+        }
+        busySlots++;
+        const claimedAt = Date.now();
+        const queueWaitMs = claimedAt - Date.parse(job.createdAt);
+        queueWaitWindow.push(queueWaitMs);
+        if (queueWaitWindow.length > QUEUE_WAIT_WINDOW) queueWaitWindow.shift();
+        console.log(`[${ts()}] [s${slotId} ${job.id}] ${describeJob(job)}  (esperó ${queueWaitMs}ms en cola)`);
+        try {
+          const result = await runJob(job);
+          await postResult(job.id, result);
+          const tag = job.type === "http"
+            ? `httpStatus=${result.response ? result.response.status : "err"}`
+            : `exit=${result.exitCode}`;
+          console.log(
+            `[${ts()}] [s${slotId} ${job.id}] ${tag} ` +
+            `cmd=${result.durationMs}ms total=${Date.now() - claimedAt}ms`
+          );
+        } finally {
+          busySlots--;
+        }
+      } catch (err) {
+        console.error(`[${ts()}] [s${slotId}] loop error:`, err.message);
+        await sleep(ERROR_BACKOFF_MS);
+      }
+    }
+  } finally {
+    liveSlots.delete(slotId);
+    if (WORKER_AUTOSCALE) {
+      console.log(`[${ts()}] [s${slotId}] slot retirado · vivos=${liveSlots.size}`);
     }
   }
 }
 
+function spawnSlot() {
+  const id = nextSlotId++;
+  workerSlot(id);
+  return id;
+}
+
+function avgQueueWait() {
+  if (!queueWaitWindow.length) return 0;
+  const sum = queueWaitWindow.reduce((a, b) => a + b, 0);
+  return sum / queueWaitWindow.length;
+}
+
+function autoscale() {
+  if (!WORKER_AUTOSCALE) return;
+  const now = Date.now();
+  if (now - lastScaleAt < AUTOSCALE_INTERVAL_MS / 2) return; // debounce
+
+  const live = liveSlots.size;
+  const util = live ? busySlots / live : 0;
+  const avgWait = avgQueueWait();
+
+  // Scale up: muchos slots activos o jobs esperando en cola del server
+  const pressureUp = (util >= 0.8) || (avgWait > 2_000 && busySlots >= live * 0.6);
+  if (pressureUp && live < WORKER_CONCURRENCY_MAX) {
+    const add = Math.min(
+      Math.max(2, Math.floor(live * 0.5)),  // crece más rápido bajo presión alta
+      WORKER_CONCURRENCY_MAX - live
+    );
+    for (let i = 0; i < add; i++) spawnSlot();
+    lastScaleAt = now;
+    console.log(
+      `[${ts()}] [autoscale] +${add} → ${liveSlots.size} ` +
+      `(busy=${busySlots} util=${util.toFixed(2)} avgWait=${avgWait.toFixed(0)}ms)`
+    );
+    return;
+  }
+
+  // Scale down: pocos slots ocupados Y nadie esperando
+  const pressureDown = (util < 0.25) && (avgWait < 500);
+  if (pressureDown && live > WORKER_CONCURRENCY_MIN) {
+    const ids = Array.from(liveSlots);
+    const removeId = ids[ids.length - 1];
+    liveSlots.delete(removeId);
+    lastScaleAt = now;
+    console.log(
+      `[${ts()}] [autoscale] -1 → ${live - 1} (target) ` +
+      `(busy=${busySlots} util=${util.toFixed(2)} avgWait=${avgWait.toFixed(0)}ms)`
+    );
+  }
+}
+
 async function loop() {
+  const initial = WORKER_AUTOSCALE
+    ? Math.max(WORKER_CONCURRENCY_MIN, Math.min(WORKER_CONCURRENCY, WORKER_CONCURRENCY_MAX))
+    : WORKER_CONCURRENCY;
   console.log(
     `[${ts()}] Worker activo. Long-polling ${BASE} con wait=${LONG_POLL_SEC}s, ` +
-    `concurrencia=${WORKER_CONCURRENCY} (VERBOSE=${VERBOSE ? "on" : "off"})`
+    `concurrencia=${initial}` +
+    (WORKER_AUTOSCALE
+      ? ` (autoscale ${WORKER_CONCURRENCY_MIN}-${WORKER_CONCURRENCY_MAX})`
+      : ` (autoscale off)`) +
+    ` (VERBOSE=${VERBOSE ? "on" : "off"})`
   );
-  const slots = [];
-  for (let i = 0; i < WORKER_CONCURRENCY; i++) {
-    slots.push(workerSlot(i));
+  for (let i = 0; i < initial; i++) spawnSlot();
+
+  if (WORKER_AUTOSCALE) {
+    setInterval(autoscale, AUTOSCALE_INTERVAL_MS);
   }
-  await Promise.all(slots);
+
+  // Mantener proceso vivo (los slots corren en background).
+  while (true) await sleep(60_000);
 }
 
 loop();
