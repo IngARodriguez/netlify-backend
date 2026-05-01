@@ -11,7 +11,8 @@ const CHUNKS = "jobs-chunks";
 // Edge Functions tienen cap de 30s wall time. Dejamos margen para emitir
 // el último chunk y cerrar limpiamente antes de que la plataforma corte.
 const EDGE_TIMEOUT_MS = 28_500;
-const POLL_INTERVAL_MS = 250;
+const POLL_INTERVAL_MS = 250;       // poll del archive en modo no-stream
+const STREAM_POLL_MS = 60;          // poll de chunks en modo streaming
 const HEARTBEAT_MS = 5_000;
 
 const HOSTS = {
@@ -329,7 +330,7 @@ function streamRealChunks({ id, chunks, archive }) {
             tryEnqueue(": keepalive\n\n");
             lastHeartbeat = Date.now();
           }
-          await new Promise((r) => setTimeout(r, 100));
+          await new Promise((r) => setTimeout(r, STREAM_POLL_MS));
         }
 
         // Cap del Edge Function alcanzado.

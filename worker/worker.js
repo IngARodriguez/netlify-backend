@@ -10,6 +10,8 @@ const ERROR_BACKOFF_MS = Number(process.env.ERROR_BACKOFF_MS || 5000);
 const CMD_TIMEOUT_MS  = Number(process.env.CMD_TIMEOUT_MS  || 30_000);
 const HTTP_TIMEOUT_MS = Number(process.env.HTTP_TIMEOUT_MS || 5 * 60_000);
 const WORKER_CONCURRENCY = Math.max(1, Math.min(Number(process.env.WORKER_CONCURRENCY || 5), 50));
+const STREAM_FLUSH_MS = Math.max(20, Number(process.env.STREAM_FLUSH_MS || 60));
+const STREAM_BATCH_SIZE = Math.max(1, Number(process.env.STREAM_BATCH_SIZE || 2));
 const MAX_BUFFER = 1024 * 1024;
 const HTTP_BODY_CAP = 1_000_000;
 const VERBOSE = process.env.VERBOSE === "1" || process.env.VERBOSE === "true";
@@ -247,7 +249,7 @@ async function runHttpStream(job) {
         }
       }
 
-      if (Date.now() - lastFlush > 150 || pending.length >= 4) {
+      if (Date.now() - lastFlush > STREAM_FLUSH_MS || pending.length >= STREAM_BATCH_SIZE) {
         await flushPending();
       }
     }
