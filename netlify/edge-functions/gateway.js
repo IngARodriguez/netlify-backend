@@ -6,8 +6,12 @@ export const config = {
 
 const ACTIVE = "jobs-active";
 const ARCHIVE = "jobs-archive";
-const MAX_WAIT_MS = 25_000;
+
+// Edge Functions tienen cap de 30s wall time. Dejamos margen para emitir
+// el último chunk y cerrar limpiamente antes de que la plataforma corte.
+const EDGE_TIMEOUT_MS = 28_500;
 const POLL_INTERVAL_MS = 250;
+const HEARTBEAT_MS = 5_000;
 
 const HOSTS = {
   anthropic: "https://api.anthropic.com",
@@ -21,13 +25,17 @@ const cors = {
   "Access-Control-Expose-Headers": "*",
 };
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 const json = (body, status = 200, extra = {}) =>
   new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json", ...cors, ...extra },
   });
+
+const readEnv = (key) => {
+  if (typeof Netlify !== "undefined" && Netlify.env?.get) return Netlify.env.get(key);
+  if (typeof Deno !== "undefined" && Deno.env?.get) return Deno.env.get(key);
+  return undefined;
+};
 
 function extractClientToken(req) {
   const x = req.headers.get("x-api-key");
@@ -44,7 +52,6 @@ function detectTarget(pathname, headers) {
   if (pathname.startsWith("/openai/")) {
     return { provider: "openai", apiPath: pathname.slice("/openai".length) || "/" };
   }
-
   if (pathname === "/v1/messages" ||
       pathname.startsWith("/v1/messages/") ||
       pathname === "/v1/messages/batches" ||
@@ -52,7 +59,6 @@ function detectTarget(pathname, headers) {
       pathname.startsWith("/v1/complete")) {
     return { provider: "anthropic", apiPath: pathname };
   }
-
   if (pathname.startsWith("/v1/chat/") ||
       pathname.startsWith("/v1/completions") ||
       pathname.startsWith("/v1/embeddings") ||
@@ -70,15 +76,12 @@ function detectTarget(pathname, headers) {
       pathname.startsWith("/v1/organization")) {
     return { provider: "openai", apiPath: pathname };
   }
-
   if (headers.get("anthropic-version") || headers.get("anthropic-beta")) {
     return { provider: "anthropic", apiPath: pathname };
   }
-
   if (pathname === "/v1/models" || pathname.startsWith("/v1/models/")) {
     return { provider: "openai", apiPath: pathname };
   }
-
   return null;
 }
 
@@ -107,7 +110,7 @@ export default async (req) => {
     }, 404);
   }
 
-  const expectedToken = process.env.JOBS_CLIENT_TOKEN ?? "admin";
+  const expectedToken = readEnv("JOBS_CLIENT_TOKEN") ?? "admin";
   if (expectedToken) {
     const got = extractClientToken(req);
     if (got !== expectedToken) {
@@ -129,7 +132,7 @@ export default async (req) => {
   }
 
   // "Fake streaming": si el cliente pide stream:true, lo apagamos para el worker
-  // y al final formatemos la respuesta completa como un único bloque SSE.
+  // y al final formateamos la respuesta completa como SSE.
   let fakeStream = false;
   let parsedBody = null;
   if (body) {
@@ -170,85 +173,113 @@ export default async (req) => {
 
   await active.setJSON(id, job);
 
-  const deadline = Date.now() + MAX_WAIT_MS;
-  let done = null;
-  while (Date.now() < deadline) {
-    await sleep(POLL_INTERVAL_MS);
-    done = await archive.get(id, { type: "json" });
-    if (done) break;
-  }
-
-  if (!done) {
-    return json({
-      error: "timeout",
-      message: `Sin resultado en ${MAX_WAIT_MS}ms. ¿Worker corriendo?`,
-      id,
-    }, 504);
-  }
-
-  archive.delete(id).catch(() => {});
-
-  if (done.error) {
-    return json({
-      error: "worker_error",
-      message: String(done.error),
-      id,
-    }, 502);
-  }
-
-  const resp = done.response;
-  if (!resp) {
-    return json({
-      error: "empty_response",
-      id,
-    }, 502);
-  }
-
-  const responseHeaders = { ...cors };
-  for (const [k, v] of Object.entries(resp.headers || {})) {
-    const lc = k.toLowerCase();
-    if (["content-encoding", "transfer-encoding", "connection", "content-length"].includes(lc)) continue;
-    if (lc.startsWith("access-control-")) continue;
-    if (fakeStream && lc === "content-type") continue;
-    responseHeaders[k] = v;
-  }
-
-  if (fakeStream && resp.status >= 200 && resp.status < 300) {
-    const obj = typeof resp.body === "string"
-      ? (() => { try { return JSON.parse(resp.body); } catch { return null; } })()
-      : resp.body;
-    if (obj) {
-      const events = buildFakeStream(target.provider, obj);
-      responseHeaders["Content-Type"] = "text/event-stream; charset=utf-8";
-      responseHeaders["Cache-Control"] = "no-cache, no-transform";
-      responseHeaders["X-Accel-Buffering"] = "no";
-      const enc = new TextEncoder();
-      let i = 0;
-      const stream = new ReadableStream({
-        async pull(controller) {
-          if (i < events.length) {
-            controller.enqueue(enc.encode(events[i++]));
-            await new Promise((r) => setTimeout(r, 8));
-          } else {
-            controller.close();
-          }
-        },
-      });
-      return new Response(stream, { status: resp.status, headers: responseHeaders });
-    }
-  }
-
-  const responseBody = typeof resp.body === "string"
-    ? resp.body
-    : JSON.stringify(resp.body);
-  if (!responseHeaders["Content-Type"] && !responseHeaders["content-type"]) {
-    responseHeaders["Content-Type"] = "application/json";
-  }
-  return new Response(responseBody, {
-    status: resp.status,
-    headers: responseHeaders,
-  });
+  return streamResult({ id, archive, target, fakeStream });
 };
+
+function streamResult({ id, archive, target, fakeStream }) {
+  const enc = new TextEncoder();
+  const startedAt = Date.now();
+  const deadline = startedAt + EDGE_TIMEOUT_MS;
+  const heartbeat = fakeStream ? ": keepalive\n\n" : " ";
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      let lastHeartbeat = Date.now();
+      let closed = false;
+
+      const tryEnqueue = (data) => {
+        if (closed) return;
+        try { controller.enqueue(enc.encode(data)); }
+        catch { closed = true; }
+      };
+      const tryClose = () => {
+        if (closed) return;
+        closed = true;
+        try { controller.close(); } catch {}
+      };
+
+      try {
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+
+          const done = await archive.get(id, { type: "json" });
+          if (done) {
+            archive.delete(id).catch(() => {});
+
+            if (done.error) {
+              tryEnqueue(JSON.stringify({
+                error: "worker_error",
+                message: String(done.error),
+                id,
+              }));
+              tryClose();
+              return;
+            }
+
+            const resp = done.response;
+            if (!resp) {
+              tryEnqueue(JSON.stringify({ error: "empty_response", id }));
+              tryClose();
+              return;
+            }
+
+            if (fakeStream && resp.status >= 200 && resp.status < 300) {
+              const obj = typeof resp.body === "string"
+                ? (() => { try { return JSON.parse(resp.body); } catch { return null; } })()
+                : resp.body;
+              if (obj) {
+                const events = buildFakeStream(target.provider, obj);
+                for (const ev of events) {
+                  tryEnqueue(ev);
+                  if (closed) return;
+                  await new Promise((r) => setTimeout(r, 8));
+                }
+                tryClose();
+                return;
+              }
+            }
+
+            const respBody = typeof resp.body === "string"
+              ? resp.body
+              : JSON.stringify(resp.body);
+            tryEnqueue(respBody);
+            tryClose();
+            return;
+          }
+
+          if (Date.now() - lastHeartbeat >= HEARTBEAT_MS) {
+            tryEnqueue(heartbeat);
+            lastHeartbeat = Date.now();
+          }
+        }
+
+        // Cap del Edge Function. El job sigue en marcha; el cliente puede
+        // recuperar el resultado más tarde con GET /api/jobs/:id.
+        tryEnqueue(JSON.stringify({
+          error: "edge_timeout",
+          message: `Sin resultado en ${EDGE_TIMEOUT_MS}ms. El job ${id} sigue en marcha en el worker; consulta GET /api/jobs/${id} para recogerlo.`,
+          id,
+        }));
+        tryClose();
+      } catch (err) {
+        if (!closed) {
+          try { controller.error(err); closed = true; } catch {}
+        }
+      }
+    },
+  });
+
+  const headers = {
+    ...cors,
+    "Content-Type": fakeStream
+      ? "text/event-stream; charset=utf-8"
+      : "application/json",
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no",
+  };
+
+  return new Response(stream, { status: 200, headers });
+}
 
 function sseEvent(name, data) {
   let out = "";
@@ -356,7 +387,6 @@ function buildOpenAIStream(resp) {
     }) + "\n\n");
   }
 
-  // Chunks de content reales — uno por cada trozo de texto
   for (let ci = 0; ci < choices.length; ci++) {
     const c = choices[ci];
     const content = (c.message && c.message.content) || "";
