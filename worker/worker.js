@@ -7,7 +7,8 @@ const BASE = (process.env.JOBS_BASE_URL || "https://enviromentfree.netlify.app")
 const TOKEN = process.env.JOBS_WORKER_TOKEN || "admin";
 const LONG_POLL_SEC = Math.max(1, Math.min(Number(process.env.LONG_POLL_SEC || 24), 24));
 const ERROR_BACKOFF_MS = Number(process.env.ERROR_BACKOFF_MS || 5000);
-const CMD_TIMEOUT_MS = Number(process.env.CMD_TIMEOUT_MS || 30_000);
+const CMD_TIMEOUT_MS  = Number(process.env.CMD_TIMEOUT_MS  || 30_000);
+const HTTP_TIMEOUT_MS = Number(process.env.HTTP_TIMEOUT_MS || 5 * 60_000);
 const MAX_BUFFER = 1024 * 1024;
 const HTTP_BODY_CAP = 1_000_000;
 const VERBOSE = process.env.VERBOSE === "1" || process.env.VERBOSE === "true";
@@ -69,7 +70,7 @@ async function runHttp(job) {
     init.body = body;
   }
   try {
-    init.signal = AbortSignal.timeout(CMD_TIMEOUT_MS);
+    init.signal = AbortSignal.timeout(HTTP_TIMEOUT_MS);
   } catch {
     // older Node — sin timeout via signal
   }
