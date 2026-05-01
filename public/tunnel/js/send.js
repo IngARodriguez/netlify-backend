@@ -185,6 +185,8 @@ async function sendStreaming({ token, provider, req, newHistory, typing, t0 }) {
   let assistantBody = null;
   let acc = '';
   let edgeTimeout = false;
+  let streamError = null;
+  let eventCount = 0;
 
   const ensureNode = () => {
     if (assistantBody) return;
@@ -203,6 +205,7 @@ async function sendStreaming({ token, provider, req, newHistory, typing, t0 }) {
 
   try {
     for await (const ev of iterSSE(r)) {
+      eventCount++;
       if (ev.event === '__comment__') {
         if (ev.raw && ev.raw.includes(':edge_timeout')) edgeTimeout = true;
         continue;
@@ -211,15 +214,14 @@ async function sendStreaming({ token, provider, req, newHistory, typing, t0 }) {
       let piece = '';
       if (isAnthropic) {
         if (ev.event === 'message_stop') break;
-        if (ev.event === 'error') {
-          setStatus('stream error: ' + JSON.stringify(ev.data).slice(0, 120), 'error');
-          break;
-        }
+        if (ev.event === 'error') { streamError = ev.data; break; }
+        if (ev.data && ev.data.type === 'error') { streamError = ev.data; break; }
         if (ev.event === 'content_block_delta') {
           piece = (ev.data && ev.data.delta && ev.data.delta.text) || '';
         }
       } else {
         if (ev.data === '[DONE]') break;
+        if (ev.data && ev.data.error) { streamError = ev.data.error; break; }
         const choice = ev.data && ev.data.choices && ev.data.choices[0];
         piece = (choice && choice.delta && choice.delta.content) || '';
       }
@@ -235,24 +237,33 @@ async function sendStreaming({ token, provider, req, newHistory, typing, t0 }) {
       }
     }
   } catch (e) {
-    setStatus('stream interrumpido: ' + e.message, 'error');
+    streamError = streamError || { type: 'transport', message: e.message };
   }
 
   if (acc) {
     if (assistantWrap) assistantWrap.classList.remove('msg-streaming');
     setHistory([...newHistory, { role: 'assistant', content: acc }]);
     renderHistory();
-    if (edgeTimeout) {
-      setStatus('ok · ' + (Date.now() - t0) + ' ms (parcial · cap del Edge alcanzado)');
+    const ms = Date.now() - t0;
+    if (streamError) {
+      const m = streamError.message || streamError.error?.message || JSON.stringify(streamError);
+      setStatus('parcial · ' + String(m).slice(0, 100), 'error');
+    } else if (edgeTimeout) {
+      setStatus('ok · ' + ms + ' ms (parcial · cap del Edge alcanzado)');
     } else {
-      setStatus('ok · ' + (Date.now() - t0) + ' ms');
+      setStatus('ok · ' + ms + ' ms');
     }
   } else {
     if (typing.isConnected) typing.remove();
-    setStatus(edgeTimeout
-      ? 'sin contenido antes del cap'
-      : 'sin contenido recibido',
-    'error');
+    if (streamError) {
+      const m = streamError.message || streamError.error?.message || JSON.stringify(streamError);
+      setStatus('error: ' + String(m).slice(0, 120), 'error');
+      appendInline('error', JSON.stringify(streamError, null, 2));
+    } else if (edgeTimeout) {
+      setStatus('cap del Edge antes del primer chunk · 0 chars · ' + eventCount + ' eventos', 'error');
+    } else {
+      setStatus('sin contenido · ' + eventCount + ' eventos vistos', 'error');
+    }
   }
 }
 
