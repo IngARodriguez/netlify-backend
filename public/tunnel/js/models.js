@@ -1,20 +1,44 @@
 import {
-  providerSel, modelSel, refreshBtn, tokenInput,
+  providerSel, modelSel,
   maxTokensInput, maxTokensValueEl, maxTokensMaxEl, paintRangeFill,
 } from './dom.js';
-import { setStatus } from './status.js';
-import { openDrawer } from './ui.js';
+
+// ─── Catálogo hard-coded ──────────────────────────────────────────────
+// Lista curada de modelos disponibles por provider.  Sin fetch al
+// provider: el chat carga instantáneamente y no consume quota para
+// listar modelos.  Si aparece un modelo nuevo, edita esta tabla y
+// recarga — la UI se actualiza al instante.
+
+export const MODELS = {
+  anthropic: [
+    'claude-opus-4-7',
+    'claude-sonnet-4-6',
+    'claude-haiku-4-5-20251001',
+  ],
+  openai: [
+    'gpt-5-pro',
+    'gpt-5',
+    'gpt-5-mini',
+    'gpt-5-nano',
+    'gpt-4.1',
+    'gpt-4.1-mini',
+    'gpt-4.1-nano',
+    'gpt-4o',
+    'gpt-4o-mini',
+    'chatgpt-4o-latest',
+    'o3',
+    'o4-mini',
+    'gpt-image-1',
+    'dall-e-3',
+  ],
+};
 
 export const DEFAULT_MODELS = {
   openai: 'gpt-4o-mini',
   anthropic: 'claude-opus-4-7',
 };
 
-export const MODELS_URL = {
-  openai: 'https://api.openai.com/v1/models',
-  anthropic: 'https://api.anthropic.com/v1/models',
-};
-
+// Modelo "rápido" usado por greeting.js para saludos dinámicos.
 export const FAST_MODEL = {
   openai: 'gpt-4o-mini',
   anthropic: 'claude-haiku-4-5-20251001',
@@ -84,21 +108,6 @@ export function updateMaxTokensSlider() {
   paintRangeFill(maxTokensInput);
 }
 
-const getCachedModels = (p) =>
-  JSON.parse(localStorage.getItem('tunnel_models_' + p) || 'null');
-const setCachedModels = (p, ids) => {
-  localStorage.setItem('tunnel_models_' + p, JSON.stringify(ids));
-  localStorage.setItem('tunnel_models_age_' + p, String(Date.now()));
-};
-
-// Edad del cache en ms.  Si nunca se cacheó, devuelve Infinity (= stale).
-export function getCacheAgeMs(provider) {
-  const t = Number(localStorage.getItem('tunnel_models_age_' + provider));
-  return t ? Date.now() - t : Infinity;
-}
-
-export const CACHE_TTL_MS = 60 * 60 * 1000; // 1h: refresco automático en init
-
 const MODELS_CHANGED_EVENT = 'openchaw:models-changed';
 function emitModelsChanged() {
   document.dispatchEvent(new CustomEvent(MODELS_CHANGED_EVENT));
@@ -109,11 +118,13 @@ export function onModelsChanged(handler) {
 
 export function populateModelSelect() {
   const provider = providerSel.value;
-  const cached = getCachedModels(provider);
-  const ids = (cached && cached.length) ? [...cached] : [DEFAULT_MODELS[provider]];
+  const ids = [...(MODELS[provider] || [])];
   const current = localStorage.getItem('tunnel_model_' + provider) || DEFAULT_MODELS[provider];
   modelSel.innerHTML = '';
-  if (!ids.includes(current)) ids.unshift(current);
+  // Si el usuario tenía guardado un modelo que ya no existe en la lista
+  // (legacy), lo añadimos al inicio para no romper su selección — el
+  // provider lo aceptará si todavía lo soporta.
+  if (current && !ids.includes(current)) ids.unshift(current);
   for (const id of ids) {
     const opt = document.createElement('option');
     opt.value = id;
@@ -122,53 +133,4 @@ export function populateModelSelect() {
     modelSel.appendChild(opt);
   }
   emitModelsChanged();
-}
-
-// fetchModels(opts):
-//   opts.silent = true → refresco en background (al cambiar provider o al
-//                        cargar la página): falla silenciosa, no toca el
-//                        status footer ni abre el drawer si no hay token.
-//                        Útil porque el cache local sigue funcionando.
-//   opts.silent = false (default) → refresco manual desde Settings: muestra
-//                        progreso en el footer y abre drawer si falta token.
-export async function fetchModels(opts = {}) {
-  const silent = !!opts.silent;
-  const token = tokenInput.value.trim();
-  if (!token) {
-    if (!silent) {
-      setStatus('falta el token en settings', 'error');
-      openDrawer();
-    }
-    return;
-  }
-  const provider = providerSel.value;
-  if (!silent) {
-    refreshBtn.disabled = true;
-    setStatus('cargando modelos...');
-  }
-  try {
-    const r = await fetch('/api/proxy', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: MODELS_URL[provider], method: 'GET' }),
-    });
-    const data = await r.json();
-    if (!r.ok || !data.response) {
-      if (!silent) setStatus('error: ' + (data.error || 'HTTP ' + r.status), 'error');
-      return;
-    }
-    const items = data.response.body && data.response.body.data;
-    if (!Array.isArray(items)) {
-      if (!silent) setStatus('respuesta inesperada', 'error');
-      return;
-    }
-    const ids = items.map((m) => m.id).filter(Boolean).sort();
-    setCachedModels(provider, ids);
-    populateModelSelect();
-    if (!silent) setStatus(ids.length + ' modelos disponibles');
-  } catch (e) {
-    if (!silent) setStatus('fallo: ' + e.message, 'error');
-  } finally {
-    if (!silent) refreshBtn.disabled = false;
-  }
 }

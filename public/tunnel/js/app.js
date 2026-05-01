@@ -1,12 +1,11 @@
 import {
   $, tokenInput, providerSel, modelSel, maxTokensInput, maxTokensValueEl,
   inputEl, formEl, sidebarEl, sidebarOverlayEl, attachBtnEl, fileInputEl,
-  refreshBtn, overlayEl, paintRangeFill,
+  overlayEl, paintRangeFill,
 } from './dom.js';
 import { setStatus, statusFooter } from './status.js';
 import {
-  populateModelSelect, fetchModels, updateMaxTokensSlider, MAX_TOKENS_STORAGE_KEY,
-  getCacheAgeMs, CACHE_TTL_MS,
+  populateModelSelect, updateMaxTokensSlider, MAX_TOKENS_STORAGE_KEY,
 } from './models.js';
 import {
   migrateLegacyHistory, getCurrentChat, persistCurrentChat,
@@ -135,11 +134,7 @@ providerSel.addEventListener('change', () => {
   updateMaxTokensSlider();
   renderHistory();
   statusFooter();
-  // Refresco automático en background: el cache local ya pintó la lista,
-  // y cuando llegue la respuesta populateModelSelect se llama de nuevo.
-  fetchModels({ silent: true });
 });
-refreshBtn.addEventListener('click', () => fetchModels());
 $('settingsToggleSidebar').addEventListener('click', openDrawer);
 $('settingsClose').addEventListener('click', closeDrawer);
 overlayEl.addEventListener('click', closeDrawer);
@@ -163,10 +158,4 @@ document.addEventListener('keydown', (e) => {
   statusFooter();
   autoresize();
   inputEl.focus();
-
-  // Si el cache de modelos del provider activo es más viejo que CACHE_TTL_MS
-  // (1h), refrescamos en background.  Si nunca hubo cache también refresca.
-  if (getCacheAgeMs(providerSel.value) > CACHE_TTL_MS) {
-    fetchModels({ silent: true });
-  }
 })();

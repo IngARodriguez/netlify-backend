@@ -3,7 +3,6 @@ export const $ = (id) => document.getElementById(id);
 export const tokenInput        = $('token');
 export const providerSel       = $('provider');
 export const modelSel          = $('model');
-export const refreshBtn        = $('refreshModels');
 export const maxTokensInput    = $('maxTokens');
 export const maxTokensValueEl  = $('maxTokensValue');
 export const maxTokensMaxEl    = $('maxTokensMax');
