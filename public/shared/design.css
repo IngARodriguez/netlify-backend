@@ -68,14 +68,36 @@ code {
 
 /* ─── Back link ─── */
 .back-link {
-  display: inline-block;
-  margin-bottom: 1rem;
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  margin-bottom: 1.4rem;
+  padding: .4rem .75rem .4rem .55rem;
   font-size: .85rem;
+  font-weight: 500;
   color: var(--text-mute);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  transition: color .15s, background .15s, border-color .15s, box-shadow .15s;
+}
+.back-link svg {
+  width: 14px;
+  height: 14px;
+  transition: transform .15s;
 }
 .back-link:hover {
   color: var(--accent);
+  background: #f5f8ff;
+  border-color: var(--accent);
   text-decoration: none;
+  box-shadow: 0 1px 4px rgba(37, 99, 235, .08);
+}
+.back-link:hover svg {
+  transform: translateX(-2px);
+}
+.back-link:active {
+  transform: scale(.98);
 }
 
 /* ─── Cards ─── */
