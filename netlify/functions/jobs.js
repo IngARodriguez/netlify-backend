@@ -90,32 +90,9 @@ export default async (req) => {
     return json({ ok: true, id, status: "pending", type: job.type });
   }
 
-  // GET /api/jobs/next  → worker reclama el siguiente pendiente (sólo mira ACTIVE)
-  // Soporta long polling con ?wait=N (segundos, max 24).
-  if (req.method === "GET" && parts.length === 3 && parts[2] === "next") {
-    if (!bearer(req, workerToken)) return json({ error: "Unauthorized" }, 401);
-    const active = getStore({ name: ACTIVE, consistency: "strong" });
-    const url = new URL(req.url);
-    const waitSec = Math.max(0, Math.min(Number(url.searchParams.get("wait")) || 0, 24));
-    const deadline = Date.now() + waitSec * 1000;
-    const INTERVAL_MS = 1500;
-
-    while (true) {
-      const list = await active.list();
-      const keys = list.blobs.map((b) => b.key).sort();
-      for (const key of keys) {
-        const j = await active.get(key, { type: "json" });
-        if (j && j.status === "pending") {
-          j.status = "running";
-          j.startedAt = new Date().toISOString();
-          await active.setJSON(j.id, j);
-          return json({ ok: true, job: j });
-        }
-      }
-      if (Date.now() >= deadline) return json({ ok: true, job: null });
-      await new Promise((r) => setTimeout(r, INTERVAL_MS));
-    }
-  }
+  // GET /api/jobs/next  → servido por la Edge Function en
+  // netlify/edge-functions/jobs-next.js (mejor cap de runtime que las
+  // Functions HTTP). Esta Function HTTP ya no maneja esa ruta.
 
   // POST /api/jobs/:id/result  → worker entrega resultado (mueve ACTIVE → ARCHIVE)
   if (req.method === "POST" && parts.length === 4 && parts[3] === "result") {
