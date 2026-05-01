@@ -216,6 +216,8 @@ async function runHttpStream(job) {
   let lastFlush = Date.now();
   let accText = "";
   let messageMeta = null;
+  let provider = null;
+  let openaiMeta = null;
 
   const flushPending = async () => {
     if (!pending.length) return;
@@ -242,6 +244,27 @@ async function runHttpStream(job) {
         if (dataLine && dataLine !== "data: [DONE]") {
           try {
             const obj = JSON.parse(dataLine.slice(6));
+            // Detectar provider la primera vez para reconstruir el archive
+            // en su formato nativo.  Anthropic emite "message_start" /
+            // "content_block_*"; OpenAI emite chunks con object
+            // "chat.completion.chunk" o al menos un "choices" array.
+            if (!provider) {
+              if (obj.type === "message_start" || (typeof obj.type === "string" && obj.type.startsWith("content_block"))) {
+                provider = "anthropic";
+              } else if (obj.object === "chat.completion.chunk" || Array.isArray(obj.choices)) {
+                provider = "openai";
+                // El primer chunk de OpenAI suele traer id/created/model/
+                // system_fingerprint; los siguientes los omiten.  Capturamos
+                // aquí inmediatamente, antes de procesar deltas.
+                openaiMeta = {
+                  id: obj.id,
+                  object: "chat.completion",
+                  created: obj.created,
+                  model: obj.model,
+                  system_fingerprint: obj.system_fingerprint,
+                };
+              }
+            }
             if (obj.type === "content_block_delta" && obj.delta?.text) {
               accText += obj.delta.text;
             } else if (obj.type === "message_start" && obj.message) {
@@ -271,9 +294,26 @@ async function runHttpStream(job) {
   await postChunks(job.id, [{ seq: seq++, done: true }]);
 
   // Reconstruir respuesta completa para archive (clientes no-streaming).
-  const reconstructed = messageMeta
-    ? { ...messageMeta, content: [{ type: "text", text: accText }], stop_reason: "end_turn" }
-    : { content: [{ type: "text", text: accText }] };
+  // El formato debe ser el del provider real porque los SDKs externos
+  // (Anthropic, OpenAI, Cline, Cursor, OpenCode) parsean GET /api/jobs/:id
+  // tras un :edge_timeout esperando su shape nativo.  Si el provider no
+  // se pudo detectar (e.g. error inmediato), conservamos el formato
+  // Anthropic previo como fallback para no cambiar el comportamiento.
+  let reconstructed;
+  if (provider === "openai") {
+    reconstructed = {
+      ...(openaiMeta || { object: "chat.completion" }),
+      choices: [{
+        index: 0,
+        message: { role: "assistant", content: accText },
+        finish_reason: "stop",
+      }],
+    };
+  } else {
+    reconstructed = messageMeta
+      ? { ...messageMeta, content: [{ type: "text", text: accText }], stop_reason: "end_turn" }
+      : { content: [{ type: "text", text: accText }] };
+  }
 
   return {
     response: {
