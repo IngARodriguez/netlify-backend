@@ -1,31 +1,18 @@
 import { getStore } from "@netlify/blobs";
+import { corsHeaders, preflight } from "./_lib/cors.js";
+import { bearer, clientToken, workerToken } from "./_lib/auth.js";
+import { json } from "./_lib/http.js";
+import {
+  ACTIVE, ARCHIVE, LEGACY,
+  getActive, getArchive, getChunks,
+} from "./_lib/stores.js";
+import { newJobId } from "./_lib/queue.js";
 
 export const config = {
   path: ["/api/jobs", "/api/jobs/*"],
 };
 
-const ACTIVE = "jobs-active";
-const ARCHIVE = "jobs-archive";
-const CHUNKS = "jobs-chunks";
-const LEGACY = "jobs";
-
-const cors = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
-
-const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json", ...cors },
-  });
-
-const bearer = (req, expected) => {
-  const h = req.headers.get("authorization") || "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return !!expected && !!m && m[1] === expected;
-};
+const cors = corsHeaders("GET, POST, OPTIONS");
 
 async function findJob(id) {
   for (const name of [ARCHIVE, ACTIVE, LEGACY]) {
@@ -37,31 +24,27 @@ async function findJob(id) {
 }
 
 export default async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response("", { status: 204, headers: cors });
-  }
-
-  const clientToken = process.env.JOBS_CLIENT_TOKEN || "admin";
-  const workerToken = process.env.JOBS_WORKER_TOKEN || "admin";
+  const pre = preflight(req, cors);
+  if (pre) return pre;
 
   const url = new URL(req.url);
   const parts = url.pathname.split("/").filter(Boolean);
 
   // POST /api/jobs  → cliente crea un trabajo (queda en ACTIVE)
   if (req.method === "POST" && parts.length === 2) {
-    if (!bearer(req, clientToken)) return json({ error: "Unauthorized" }, 401);
+    if (!bearer(req, clientToken())) return json({ error: "Unauthorized" }, 401, cors);
     let body;
-    try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
+    try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400, cors); }
 
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = newJobId();
     let job;
 
     if (body.type === "http" || body.request) {
       if (!body.request || typeof body.request.url !== "string") {
-        return json({ error: "Para HTTP hace falta request.url (string)." }, 400);
+        return json({ error: "Para HTTP hace falta request.url (string)." }, 400, cors);
       }
       try { new URL(body.request.url); }
-      catch { return json({ error: "request.url inválida." }, 400); }
+      catch { return json({ error: "request.url inválida." }, 400, cors); }
       job = {
         id,
         type: "http",
@@ -76,8 +59,8 @@ export default async (req) => {
       };
     } else {
       const command = typeof body.command === "string" ? body.command.trim() : "";
-      if (!command) return json({ error: "Falta 'command' (string) o 'request' (objeto)." }, 400);
-      if (command.length > 4000) return json({ error: "command demasiado largo" }, 400);
+      if (!command) return json({ error: "Falta 'command' (string) o 'request' (objeto)." }, 400, cors);
+      if (command.length > 4000) return json({ error: "command demasiado largo" }, 400, cors);
       job = {
         id,
         type: "shell",
@@ -87,52 +70,52 @@ export default async (req) => {
       };
     }
 
-    await getStore({ name: ACTIVE, consistency: "strong" }).setJSON(id, job);
-    return json({ ok: true, id, status: "pending", type: job.type });
+    await getActive().setJSON(id, job);
+    return json({ ok: true, id, status: "pending", type: job.type }, 200, cors);
   }
 
   // GET /api/jobs/next  → servido por la Edge Function en
   // netlify/edge-functions/jobs-next.js (mejor cap de runtime que las
   // Functions HTTP). Esta Function HTTP ya no maneja esa ruta.
 
-  // POST /api/jobs/:id/chunks  → worker entrega un batch de chunks SSE para
-  // streaming en tiempo real.  Cada chunk: { seq: number, raw?: string, done?: bool }.
+  // POST /api/jobs/:id/chunks  → worker entrega un batch de chunks SSE
+  // para streaming en tiempo real.  Cada chunk: { seq: number, raw?: string, done?: bool }.
   if (req.method === "POST" && parts.length === 4 && parts[3] === "chunks") {
-    if (!bearer(req, workerToken)) return json({ error: "Unauthorized" }, 401);
+    if (!bearer(req, workerToken())) return json({ error: "Unauthorized" }, 401, cors);
     const id = parts[2];
     let body;
-    try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
-    if (!Array.isArray(body)) return json({ error: "Body must be array" }, 400);
-    const chunks = getStore({ name: CHUNKS, consistency: "strong" });
+    try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400, cors); }
+    if (!Array.isArray(body)) return json({ error: "Body must be array" }, 400, cors);
+    const chunks = getChunks();
     await Promise.all(body.map((c) =>
       chunks.setJSON(`${id}/${String(c.seq).padStart(6, "0")}`, c)
     ));
-    return json({ ok: true, count: body.length });
+    return json({ ok: true, count: body.length }, 200, cors);
   }
 
   // DELETE /api/jobs/:id/chunks  → limpia los chunks de un job (post-stream).
   if (req.method === "DELETE" && parts.length === 4 && parts[3] === "chunks") {
-    if (!bearer(req, clientToken) && !bearer(req, workerToken)) {
-      return json({ error: "Unauthorized" }, 401);
+    if (!bearer(req, clientToken()) && !bearer(req, workerToken())) {
+      return json({ error: "Unauthorized" }, 401, cors);
     }
     const id = parts[2];
-    const chunks = getStore({ name: CHUNKS, consistency: "strong" });
+    const chunks = getChunks();
     const { blobs } = await chunks.list({ prefix: `${id}/` });
     await Promise.all(blobs.map((b) => chunks.delete(b.key)));
-    return json({ ok: true, deleted: blobs.length });
+    return json({ ok: true, deleted: blobs.length }, 200, cors);
   }
 
   // POST /api/jobs/:id/result  → worker entrega resultado (mueve ACTIVE → ARCHIVE)
   if (req.method === "POST" && parts.length === 4 && parts[3] === "result") {
-    if (!bearer(req, workerToken)) return json({ error: "Unauthorized" }, 401);
+    if (!bearer(req, workerToken())) return json({ error: "Unauthorized" }, 401, cors);
     const id = parts[2];
-    const active = getStore({ name: ACTIVE, consistency: "strong" });
-    const archive = getStore({ name: ARCHIVE, consistency: "strong" });
+    const active = getActive();
+    const archive = getArchive();
     const job = await active.get(id, { type: "json" });
-    if (!job) return json({ error: "Not found" }, 404);
+    if (!job) return json({ error: "Not found" }, 404, cors);
 
     let body;
-    try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
+    try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400, cors); }
 
     job.status = body.error ? "error" : "done";
     job.finishedAt = new Date().toISOString();
@@ -149,45 +132,45 @@ export default async (req) => {
 
     await archive.setJSON(id, job);
     await active.delete(id);
-    return json({ ok: true });
+    return json({ ok: true }, 200, cors);
   }
 
   // DELETE /api/jobs/archive  → cliente vacía todo el store de archive
   if (req.method === "DELETE" && parts.length === 3 && parts[2] === "archive") {
-    if (!bearer(req, clientToken)) return json({ error: "Unauthorized" }, 401);
-    const store = getStore({ name: ARCHIVE, consistency: "strong" });
+    if (!bearer(req, clientToken())) return json({ error: "Unauthorized" }, 401, cors);
+    const store = getArchive();
     const { blobs } = await store.list();
     await Promise.all(blobs.map((b) => store.delete(b.key)));
-    return json({ ok: true, deleted: blobs.length, store: "archive" });
+    return json({ ok: true, deleted: blobs.length, store: "archive" }, 200, cors);
   }
 
   // DELETE /api/jobs/active  → cliente vacía todo el store de active
   if (req.method === "DELETE" && parts.length === 3 && parts[2] === "active") {
-    if (!bearer(req, clientToken)) return json({ error: "Unauthorized" }, 401);
-    const store = getStore({ name: ACTIVE, consistency: "strong" });
+    if (!bearer(req, clientToken())) return json({ error: "Unauthorized" }, 401, cors);
+    const store = getActive();
     const { blobs } = await store.list();
     await Promise.all(blobs.map((b) => store.delete(b.key)));
-    return json({ ok: true, deleted: blobs.length, store: "active" });
+    return json({ ok: true, deleted: blobs.length, store: "active" }, 200, cors);
   }
 
   // DELETE /api/jobs/:id  → cliente borra de cualquier store
   if (req.method === "DELETE" && parts.length === 3) {
-    if (!bearer(req, clientToken)) return json({ error: "Unauthorized" }, 401);
+    if (!bearer(req, clientToken())) return json({ error: "Unauthorized" }, 401, cors);
     const id = parts[2];
     const found = await findJob(id);
-    if (!found) return json({ error: "Not found" }, 404);
+    if (!found) return json({ error: "Not found" }, 404, cors);
     await found.store.delete(id);
-    return json({ ok: true });
+    return json({ ok: true }, 200, cors);
   }
 
-  // GET /api/jobs/:id  → cliente consulta estado/resultado (busca en ARCHIVE → ACTIVE → LEGACY)
+  // GET /api/jobs/:id  → cliente consulta estado/resultado (ARCHIVE → ACTIVE → LEGACY)
   if (req.method === "GET" && parts.length === 3) {
-    if (!bearer(req, clientToken)) return json({ error: "Unauthorized" }, 401);
+    if (!bearer(req, clientToken())) return json({ error: "Unauthorized" }, 401, cors);
     const id = parts[2];
     const found = await findJob(id);
-    if (!found) return json({ error: "Not found" }, 404);
-    return json({ ok: true, job: found.job });
+    if (!found) return json({ error: "Not found" }, 404, cors);
+    return json({ ok: true, job: found.job }, 200, cors);
   }
 
-  return json({ error: "Route not found" }, 404);
+  return json({ error: "Route not found" }, 404, cors);
 };
