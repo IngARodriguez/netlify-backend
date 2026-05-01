@@ -6,10 +6,13 @@ import { setStatus } from './status.js';
 import { openDrawer } from './ui.js';
 import { getHistory, setHistory, getCurrentChat } from './chats.js';
 import { renderHistory, typingNode, appendInline } from './render.js';
+import { brandSVG } from './icons.js';
+import { renderMarkdown } from './markdown.js';
 import {
   pendingAttachments, clearAttachments, buildContentParts,
 } from './attachments.js';
 import { requiresResponsesAPI, isImageModel } from './models.js';
+import { iterSSE } from './stream.js';
 
 function buildRequest(history, userMessage) {
   const provider = providerSel.value;
@@ -21,6 +24,7 @@ function buildRequest(history, userMessage) {
     if (isImageModel(model)) {
       const promptText = extractPromptText(userMessage);
       return {
+        kind: 'image',
         url: 'https://api.openai.com/v1/images/generations',
         body: { model, prompt: promptText, n: 1, size: '1024x1024' },
         extract: extractImageResponse,
@@ -31,6 +35,7 @@ function buildRequest(history, userMessage) {
       const body = { model, input, max_output_tokens: maxTokens };
       if (systemPrompt) body.instructions = systemPrompt;
       return {
+        kind: 'responses',
         url: 'https://api.openai.com/v1/responses',
         body,
         extract: extractResponsesText,
@@ -40,6 +45,7 @@ function buildRequest(history, userMessage) {
       ? [{ role: 'system', content: systemPrompt }, ...history, userMessage]
       : [...history, userMessage];
     return {
+      kind: 'chat',
       url: 'https://api.openai.com/v1/chat/completions',
       body: { model, messages },
       extract: (r) => r.body.choices[0].message.content,
@@ -49,6 +55,7 @@ function buildRequest(history, userMessage) {
   const body = { model, max_tokens: maxTokens, messages };
   if (systemPrompt) body.system = systemPrompt;
   return {
+    kind: 'chat',
     url: 'https://api.anthropic.com/v1/messages',
     body,
     extract: (r) => r.body.content[0].text,
@@ -140,6 +147,167 @@ async function pollJobUntilDone(token, id, t0) {
   throw new Error('superado el tope de espera (10 min)');
 }
 
+function makeAssistantNode(provider) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg msg-assistant msg-streaming';
+  const avatar = document.createElement('div');
+  avatar.className = 'avatar';
+  avatar.innerHTML = brandSVG(provider);
+  const body = document.createElement('div');
+  body.className = 'msg-body md';
+  wrap.appendChild(avatar);
+  wrap.appendChild(body);
+  return { wrap, body };
+}
+
+async function sendStreaming({ token, provider, req, newHistory, typing, t0 }) {
+  const isAnthropic = provider === 'anthropic';
+  const path = isAnthropic ? '/v1/messages' : '/v1/chat/completions';
+  const headers = isAnthropic
+    ? { 'x-api-key': token, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }
+    : { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
+
+  const r = await fetch(path, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ ...req.body, stream: true }),
+  });
+
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    setStatus('HTTP ' + r.status + ': ' + text.slice(0, 120), 'error');
+    if (typing.isConnected) typing.remove();
+    appendInline('error', text || ('HTTP ' + r.status));
+    return;
+  }
+
+  let assistantWrap = null;
+  let assistantBody = null;
+  let acc = '';
+  let edgeTimeout = false;
+
+  const ensureNode = () => {
+    if (assistantBody) return;
+    const node = makeAssistantNode(provider);
+    assistantWrap = node.wrap;
+    assistantBody = node.body;
+    if (typing.isConnected) typing.replaceWith(assistantWrap);
+    else messagesEl.appendChild(assistantWrap);
+  };
+
+  const repaint = () => {
+    if (!assistantBody) return;
+    assistantBody.innerHTML = renderMarkdown(acc);
+    conversationEl.scrollTop = conversationEl.scrollHeight;
+  };
+
+  try {
+    for await (const ev of iterSSE(r)) {
+      if (ev.event === '__comment__') {
+        if (ev.raw && ev.raw.includes(':edge_timeout')) edgeTimeout = true;
+        continue;
+      }
+
+      let piece = '';
+      if (isAnthropic) {
+        if (ev.event === 'message_stop') break;
+        if (ev.event === 'error') {
+          setStatus('stream error: ' + JSON.stringify(ev.data).slice(0, 120), 'error');
+          break;
+        }
+        if (ev.event === 'content_block_delta') {
+          piece = (ev.data && ev.data.delta && ev.data.delta.text) || '';
+        }
+      } else {
+        if (ev.data === '[DONE]') break;
+        const choice = ev.data && ev.data.choices && ev.data.choices[0];
+        piece = (choice && choice.delta && choice.delta.content) || '';
+      }
+
+      if (piece) {
+        ensureNode();
+        acc += piece;
+        repaint();
+        setStatus(
+          'stream · ' + acc.length + ' chars · ' +
+          Math.floor((Date.now() - t0) / 1000) + 's'
+        );
+      }
+    }
+  } catch (e) {
+    setStatus('stream interrumpido: ' + e.message, 'error');
+  }
+
+  if (acc) {
+    if (assistantWrap) assistantWrap.classList.remove('msg-streaming');
+    setHistory([...newHistory, { role: 'assistant', content: acc }]);
+    renderHistory();
+    if (edgeTimeout) {
+      setStatus('ok · ' + (Date.now() - t0) + ' ms (parcial · cap del Edge alcanzado)');
+    } else {
+      setStatus('ok · ' + (Date.now() - t0) + ' ms');
+    }
+  } else {
+    if (typing.isConnected) typing.remove();
+    setStatus(edgeTimeout
+      ? 'sin contenido antes del cap'
+      : 'sin contenido recibido',
+    'error');
+  }
+}
+
+async function sendViaProxy({ token, req, newHistory, typing, t0 }) {
+  const r = await fetch('/api/proxy', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: req.url, method: 'POST', body: req.body }),
+  });
+  const data = await r.json();
+  if (!r.ok && r.status !== 202) {
+    setStatus('HTTP ' + r.status + ': ' + (data.error || ''), 'error');
+    appendInline('error', JSON.stringify(data, null, 2));
+    return;
+  }
+
+  let final = data;
+  if (data.status === 'pending' || data.status === 'running') {
+    try {
+      const job = await pollJobUntilDone(token, data.id, t0);
+      final = {
+        status: job.status,
+        response: job.response,
+        error: job.error,
+        durationMs: job.durationMs,
+        id: job.id,
+      };
+    } catch (e) {
+      setStatus(e.message, 'error');
+      return;
+    }
+  }
+
+  if (final.status === 'error' || final.error) {
+    setStatus('error worker: ' + (final.error || 'sin detalle'), 'error');
+    appendInline('error', JSON.stringify(final, null, 2));
+    return;
+  }
+  if (final.status !== 'done' || !final.response) {
+    setStatus('status=' + final.status + ' ' + (final.message || final.error || ''), 'error');
+    return;
+  }
+  let text;
+  try { text = req.extract(final.response); }
+  catch (e) {
+    setStatus('parse error: ' + e.message, 'error');
+    appendInline('error', JSON.stringify(final.response, null, 2));
+    return;
+  }
+  if (typing.isConnected) typing.remove();
+  setHistory([...newHistory, { role: 'assistant', content: text }]);
+  renderHistory();
+  setStatus('ok · ' + (Date.now() - t0) + ' ms');
+}
+
 export async function send(prompt) {
   const token = tokenInput.value.trim();
   if (!token) {
@@ -168,59 +336,16 @@ export async function send(prompt) {
   const t0 = Date.now();
   try {
     const req = buildRequest(history, userMessage);
-    const r = await fetch('/api/proxy', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: req.url, method: 'POST', body: req.body }),
-    });
-    const data = await r.json();
-    if (!r.ok && r.status !== 202) {
-      setStatus('HTTP ' + r.status + ': ' + (data.error || ''), 'error');
-      appendInline('error', JSON.stringify(data, null, 2));
-      return;
+    if (req.kind === 'chat') {
+      await sendStreaming({ token, provider, req, newHistory, typing, t0 });
+    } else {
+      // image / responses-api: por ahora no streamean, vamos por /api/proxy.
+      await sendViaProxy({ token, req, newHistory, typing, t0 });
     }
-
-    let final = data;
-    if (data.status === 'pending' || data.status === 'running') {
-      // El worker aún sigue trabajando. Polling cliente hasta que termine.
-      try {
-        const job = await pollJobUntilDone(token, data.id, t0);
-        final = {
-          status: job.status,
-          response: job.response,
-          error: job.error,
-          durationMs: job.durationMs,
-          id: job.id,
-        };
-      } catch (e) {
-        setStatus(e.message, 'error');
-        return;
-      }
-    }
-
-    if (final.status === 'error' || final.error) {
-      setStatus('error worker: ' + (final.error || 'sin detalle'), 'error');
-      appendInline('error', JSON.stringify(final, null, 2));
-      return;
-    }
-    if (final.status !== 'done' || !final.response) {
-      setStatus('status=' + final.status + ' ' + (final.message || final.error || ''), 'error');
-      return;
-    }
-    let text;
-    try { text = req.extract(final.response); }
-    catch (e) {
-      setStatus('parse error: ' + e.message, 'error');
-      appendInline('error', JSON.stringify(final.response, null, 2));
-      return;
-    }
-    setHistory([...newHistory, { role: 'assistant', content: text }]);
-    renderHistory();
-    setStatus('ok · ' + (Date.now() - t0) + ' ms');
   } catch (e) {
     setStatus('fallo: ' + e.message, 'error');
-  } finally {
     if (typing.isConnected) typing.remove();
+  } finally {
     sendBtn.disabled = false;
   }
 }
