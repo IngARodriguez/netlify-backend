@@ -118,6 +118,28 @@ function extractResponsesText(r) {
   return '';
 }
 
+const POLL_INTERVAL_MS = 1500;
+const POLL_DEADLINE_MS = 10 * 60 * 1000; // 10 min
+
+async function pollJobUntilDone(token, id, t0) {
+  const deadline = Date.now() + POLL_DEADLINE_MS;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    const r = await fetch('/api/jobs/' + id, {
+      headers: { 'Authorization': 'Bearer ' + token },
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      throw new Error('polling HTTP ' + r.status + ': ' + (data.error || 'desconocido'));
+    }
+    const job = data.job;
+    if (!job) throw new Error('polling: respuesta sin job');
+    if (job.status === 'done' || job.status === 'error') return job;
+    setStatus('pensando · ' + Math.floor((Date.now() - t0) / 1000) + 's');
+  }
+  throw new Error('superado el tope de espera (10 min)');
+}
+
 export async function send(prompt) {
   const token = tokenInput.value.trim();
   if (!token) {
@@ -152,20 +174,44 @@ export async function send(prompt) {
       body: JSON.stringify({ url: req.url, method: 'POST', body: req.body }),
     });
     const data = await r.json();
-    if (!r.ok) {
+    if (!r.ok && r.status !== 202) {
       setStatus('HTTP ' + r.status + ': ' + (data.error || ''), 'error');
       appendInline('error', JSON.stringify(data, null, 2));
       return;
     }
-    if (data.status !== 'done' || !data.response) {
-      setStatus('status=' + data.status + ' ' + (data.message || data.error || ''), 'error');
+
+    let final = data;
+    if (data.status === 'pending' || data.status === 'running') {
+      // El worker aún sigue trabajando. Polling cliente hasta que termine.
+      try {
+        const job = await pollJobUntilDone(token, data.id, t0);
+        final = {
+          status: job.status,
+          response: job.response,
+          error: job.error,
+          durationMs: job.durationMs,
+          id: job.id,
+        };
+      } catch (e) {
+        setStatus(e.message, 'error');
+        return;
+      }
+    }
+
+    if (final.status === 'error' || final.error) {
+      setStatus('error worker: ' + (final.error || 'sin detalle'), 'error');
+      appendInline('error', JSON.stringify(final, null, 2));
+      return;
+    }
+    if (final.status !== 'done' || !final.response) {
+      setStatus('status=' + final.status + ' ' + (final.message || final.error || ''), 'error');
       return;
     }
     let text;
-    try { text = req.extract(data.response); }
+    try { text = req.extract(final.response); }
     catch (e) {
       setStatus('parse error: ' + e.message, 'error');
-      appendInline('error', JSON.stringify(data.response, null, 2));
+      appendInline('error', JSON.stringify(final.response, null, 2));
       return;
     }
     setHistory([...newHistory, { role: 'assistant', content: text }]);
