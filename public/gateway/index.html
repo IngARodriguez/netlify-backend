@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>API gateway — OpenChaw</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/shared/design.css" />
+  <link rel="stylesheet" href="/gateway/style.css" />
+  <script type="module" src="/gateway/js/app.js"></script>
+</head>
+<body>
+  <a href="/" class="back-link">← OpenChaw</a>
+  <h1>API gateway</h1>
+  <p class="lead">
+    Reemplaza <code>api.openai.com</code> y <code>api.anthropic.com</code> por
+    este sitio. El worker pone la API key real, tú solo envías el token de
+    OpenChaw como auth.
+  </p>
+
+  <!-- ─── Status panel (live) ─────────────────────────────────────────── -->
+  <section class="status-panel">
+    <header class="status-header">
+      <h2>Status</h2>
+      <button id="statusRefresh" type="button" class="btn">↻ Refrescar</button>
+    </header>
+    <div class="status-items" id="statusItems"></div>
+    <p class="status-meta" id="statusMeta">Cargando…</p>
+  </section>
+
+  <!-- ─── Base URL ────────────────────────────────────────────────────── -->
+  <h2>Base URL</h2>
+  <p class="lead">
+    Para SDKs Anthropic úsala tal cual; para SDKs OpenAI añade
+    <code>/v1</code> al final.
+  </p>
+  <pre class="snippet" data-copy><button type="button" class="copy-btn">copy</button><span class="g-base">BASE</span></pre>
+
+  <!-- ─── Tabla de endpoints ──────────────────────────────────────────── -->
+  <h2>Endpoints disponibles</h2>
+  <div id="endpointsTable"></div>
+
+  <!-- ─── Ejemplos por tab ────────────────────────────────────────────── -->
+  <h2>Ejemplos</h2>
+  <div class="tabs" id="tabs"></div>
+  <div id="examples"></div>
+
+  <!-- ─── Mantenimiento ───────────────────────────────────────────────── -->
+  <h2>Mantenimiento</h2>
+  <p class="lead">
+    Vacía los blobs acumulados en <code>jobs-archive</code> y
+    <code>jobs-active</code>.
+  </p>
+  <div class="maint-actions">
+    <button id="cleanBtn" type="button" class="btn danger">Limpiar blobs acumulados</button>
+    <span id="cleanStatus" class="status-meta"></span>
+  </div>
+</body>
+</html>
