@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "netlify dev",
-    "deploy": "netlify deploy --prod"
+    "deploy": "netlify deploy --prod",
+    "test": "node --test tests/"
   },
   "dependencies": {
     "@netlify/blobs": "^10.7.4"
