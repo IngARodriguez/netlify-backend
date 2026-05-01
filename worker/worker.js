@@ -9,6 +9,7 @@ const LONG_POLL_SEC = Math.max(1, Math.min(Number(process.env.LONG_POLL_SEC || 2
 const ERROR_BACKOFF_MS = Number(process.env.ERROR_BACKOFF_MS || 5000);
 const CMD_TIMEOUT_MS  = Number(process.env.CMD_TIMEOUT_MS  || 30_000);
 const HTTP_TIMEOUT_MS = Number(process.env.HTTP_TIMEOUT_MS || 5 * 60_000);
+const WORKER_CONCURRENCY = Math.max(1, Math.min(Number(process.env.WORKER_CONCURRENCY || 5), 50));
 const MAX_BUFFER = 1024 * 1024;
 const HTTP_BODY_CAP = 1_000_000;
 const VERBOSE = process.env.VERBOSE === "1" || process.env.VERBOSE === "true";
@@ -155,39 +156,40 @@ function describeJob(job) {
   return `$ ${job.command}`;
 }
 
-async function loop() {
-  console.log(
-    `[${ts()}] Worker activo. Long-polling ${BASE} con wait=${LONG_POLL_SEC}s ` +
-    `(VERBOSE=${VERBOSE ? "on" : "off"})`
-  );
-  let pollCount = 0;
+async function workerSlot(slotId) {
   while (true) {
-    pollCount++;
     try {
       const job = await claimNext();
-      if (!job) {
-        if (!VERBOSE && pollCount % 10 === 0) {
-          console.log(`[${ts()}] heartbeat ${pollCount} polls, sin trabajos`);
-        }
-        continue;
-      }
+      if (!job) continue;
       const claimedAt = Date.now();
       const queueWaitMs = claimedAt - Date.parse(job.createdAt);
-      console.log(`[${ts()}] [${job.id}] ${describeJob(job)}  (esperó ${queueWaitMs}ms en cola)`);
+      console.log(`[${ts()}] [s${slotId} ${job.id}] ${describeJob(job)}  (esperó ${queueWaitMs}ms en cola)`);
       const result = await runJob(job);
       await postResult(job.id, result);
       const tag = job.type === "http"
         ? `httpStatus=${result.response ? result.response.status : "err"}`
         : `exit=${result.exitCode}`;
       console.log(
-        `[${ts()}] [${job.id}] ${tag} ` +
+        `[${ts()}] [s${slotId} ${job.id}] ${tag} ` +
         `cmd=${result.durationMs}ms total=${Date.now() - claimedAt}ms`
       );
     } catch (err) {
-      console.error(`[${ts()}] loop error:`, err.message);
+      console.error(`[${ts()}] [s${slotId}] loop error:`, err.message);
       await sleep(ERROR_BACKOFF_MS);
     }
   }
+}
+
+async function loop() {
+  console.log(
+    `[${ts()}] Worker activo. Long-polling ${BASE} con wait=${LONG_POLL_SEC}s, ` +
+    `concurrencia=${WORKER_CONCURRENCY} (VERBOSE=${VERBOSE ? "on" : "off"})`
+  );
+  const slots = [];
+  for (let i = 0; i < WORKER_CONCURRENCY; i++) {
+    slots.push(workerSlot(i));
+  }
+  await Promise.all(slots);
 }
 
 loop();

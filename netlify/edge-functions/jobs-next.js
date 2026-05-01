@@ -54,15 +54,52 @@ export default async (req) => {
     const list = await active.list();
     const keys = list.blobs.map((b) => b.key).sort();
     for (const key of keys) {
-      const j = await active.get(key, { type: "json" });
-      if (j && j.status === "pending") {
-        j.status = "running";
-        j.startedAt = new Date().toISOString();
-        await active.setJSON(j.id, j);
-        return json({ ok: true, job: j });
-      }
+      const claimed = await tryClaim(active, key);
+      if (claimed) return json({ ok: true, job: claimed });
     }
     if (Date.now() >= deadline) return json({ ok: true, job: null });
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
 };
+
+// Reclama un job atómicamente.  Indispensable cuando el worker corre en
+// paralelo con varios slots o cuando hay >1 worker — evita doble entrega
+// del mismo job.
+async function tryClaim(active, key) {
+  let meta;
+  try {
+    meta = await active.getWithMetadata(key, { type: "json" });
+  } catch {
+    return null;
+  }
+  if (!meta || !meta.data) return null;
+  const job = meta.data;
+  if (job.status !== "pending") return null;
+
+  const claimId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const updated = {
+    ...job,
+    status: "running",
+    startedAt: new Date().toISOString(),
+    claimId,
+  };
+
+  // CAS atómico: solo escribimos si nadie tocó el blob desde nuestra lectura.
+  try {
+    const result = await active.setJSON(key, updated, { onlyIfMatch: meta.etag });
+    if (result && result.modified === false) return null;
+  } catch {
+    return null;
+  }
+
+  // Defensa por si la versión del SDK ignora onlyIfMatch silenciosamente.
+  let verify;
+  try {
+    verify = await active.get(key, { type: "json" });
+  } catch {
+    return null;
+  }
+  if (!verify || verify.claimId !== claimId) return null;
+
+  return verify;
+}
